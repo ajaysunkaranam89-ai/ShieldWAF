@@ -42,3 +42,20 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--a);border-color:
 iframe.prev{width:100%;height:340px;border:1px solid var(--line);border-radius:10px;background:#fff}
 details{margin:10px 0}summary{cursor:pointer;font-weight:700;color:var(--info)}
 .hint{color:var(--mut);font-size:12.5px}
+
+/* Dashboards page: Grafana-style panels */
+.dtop{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.dtools{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.seg{display:inline-flex;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg small{padding:0 8px;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.seg a{padding:6px 12px;color:var(--txt);font-size:13px;border-left:1px solid var(--line)}.seg a:hover{background:var(--panel2);text-decoration:none}.seg a.on{background:var(--a);color:#fff}
+.gp{background:var(--panel);border:1px solid var(--line);border-radius:6px;min-width:0}
+.gp .gt{font-size:13px;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.gp .gb{padding:10px 12px}
+.gstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:12px}
+.gstat{padding:10px 12px 6px}.gstat .gt{border:0;padding:0 0 2px;color:var(--mut);font-weight:500}.gstat .gv{font-size:28px;font-weight:700;line-height:1.2}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:12px}
+.chart{display:block;height:210px}.spark{display:block;margin-top:2px}
+.lg{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px;font-size:12.5px;color:var(--mut)}.lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}.lg b{color:var(--txt)}
+.bgrow{margin:7px 0}.bgl{display:flex;justify-content:space-between;gap:10px;font-size:13px}.bgl small{color:var(--mut)}
+.bgt{height:8px;background:#0d1328;border-radius:4px;overflow:hidden;margin-top:3px}.bgt i{display:block;height:100%;border-radius:4px}

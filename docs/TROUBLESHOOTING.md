@@ -18,7 +18,12 @@
 | Country rules say "country data has not been downloaded yet" | **Threat intel, Update country data** (takes about a minute; needs internet access). |
 | Rule updates cannot reach GitHub | The pod needs outbound HTTPS to github.com. Check network policies and proxies. |
 | Locked out of the panel | See "If you are locked out" in `USER-GUIDE.md`. |
-| Reload is slow with many sites | Each site loads the whole rule set; reloads take about half a second per site. Give the engine more memory, and avoid hundreds of sites in one instance. |
+| Reload is slow with many sites | Normally the OWASP rules are loaded once and reloads take well under a second even with hundreds of sites (see **Cluster**, "Rule layout"). If it says *one rule set per site*, a canary rule set is being tested (Rule updates page): finish or roll back the canary. Also check that `SHIELD_SHARED_RULES` is not set to `0` on the engine. |
+| **Cluster** shows a replica as "cannot apply" | Read the note in the table: usually a shared file has not arrived yet (it retries every 5 seconds) or the configuration refers to something that only exists on another replica. If it persists, `kubectl logs <pod> -c panel`. |
+| Warning "shared files are off" on the Cluster page | The secret has no `SHIELD_DATA_KEY` (installation older than 2.3). Run `sh scripts/create-db-secret.sh` (the database password is not changed) and restart the replicas: `kubectl rollout restart deploy/shieldwaf -n shieldwaf`. Until then use one replica. |
+| A change seems to apply on one replica only | The confirmation message says how many replicas applied it. A replica that is still applying keeps retrying; the Cluster page shows its status. |
+| The panel returns errors but the sites still work | The database is probably down: `kubectl get pods -n shieldwaf`, `kubectl logs shieldwaf-db-0 -n shieldwaf`. Traffic is unaffected; the panel returns when the database does. |
+| Pod stays `1/2` after an upgrade from 2.2 | Missing `SHIELD_DATA_KEY` in the secret: run `sh scripts/create-db-secret.sh` once, then `kubectl rollout restart deploy/shieldwaf -n shieldwaf`. |
 
 ## Useful commands
 ```bash

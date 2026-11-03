@@ -3,13 +3,20 @@
 Hardening baseline (all sites): TLS 1.2+ only, strict timeouts and header limits, method allow-list, unknown host names get no
 reply (444), spoofable X-Forwarded-For is replaced by the real client IP, request ids, Server header removed.
 Reload handshake: the panel swaps the `current` link and writes reload.request; the engine container (separate, no shared
-process namespace) tests+reloads nginx and answers in reload.status; on failure the panel rolls back to the previous generation."""
+process namespace) tests+reloads nginx and answers in reload.status; on failure the panel rolls back to the previous generation.
+
+Reload speed: the OWASP rule set is parsed ONCE (ms-shared.conf at http level) and every site inherits it; the per-site settings (mode, paranoia,
+threshold, exclusions) are chosen per request by the Host header inside that one rule set. Only sites with their own custom or OpenAPI rules get a
+small dedicated file that nginx-ModSecurity merges onto the shared rules without parsing them again. While a canary rule set is being tested the
+old layout (one full rule set per site) is used, because two versions of the rules cannot be merged."""
+import hashlib
 import ipaddress
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 
 import crsupdate
@@ -27,6 +34,11 @@ TLS_PORT = int(os.environ.get("SHIELD_TLS_PORT", "8443"))
 LISTEN_PORT = HTTP_PORT            # kept for the health probe in app.py
 MODSEC_DIR = "/etc/modsecurity.d"
 NJS_DIR = "/panel/njs"
+
+SHARED_RULES = os.environ.get("SHIELD_SHARED_RULES", "1") != "0"      # 0 = always use one full rule set per site (slow, for troubleshooting)
+RENDER_LOCK = threading.RLock()
+LAST = {}              # {"key": (config hash, shared-files version), "stats": {...}} of the last successful render
+SHARED_BASE_ID = 5000000
 
 SCANNERS = "sqlmap|nikto|nmap|masscan|acunetix|nessus|openvas|dirbuster|gobuster|wpscan|havij|zgrab|nuclei|jaeles|whatweb|w3af|netsparker"
 METHOD_RE = re.compile(r"^[A-Z]{3,10}$")
@@ -102,7 +114,115 @@ def _modsec_site(site, gen, crs_dir=crsupdate.BAKED, canary=False):
     return "\n".join(lines) + "\n"
 
 
-def _common(site, gen, feed_on):
+def _dedicated(site):
+    """Sites with their own custom or OpenAPI rules cannot share the rule set's per-host dispatch."""
+    oa = site["openapi"]
+    return bool(site["custom_rules"].strip()) or (oa["mode"] != "off" and bool(oa["spec"].strip()))
+
+
+def _core(host):
+    h = host.lower()
+    return r"(?:[^.:/]+\.)+" + re.escape(h[2:]) if h.startswith("*.") else re.escape(h)
+
+
+def _host_rx(cores):
+    """Regex for a Host header (case-insensitive via t:lowercase), tolerant of a port and of a trailing dot."""
+    return "^(?:" + "|".join(cores) + r")\.?(?::[0-9]+)?$"
+
+
+def _more_specific(site, others):
+    """Other sites whose host names nginx would pick before this wildcard site (they must not receive its settings)."""
+    h = site["host"].lower()
+    if not h.startswith("*."):
+        return []
+    suf = "." + h[2:]
+    out = []
+    for o in others:
+        oh = o["host"].lower()
+        if oh != h and (oh[2:] if oh.startswith("*.") else oh).endswith(suf):
+            out.append(o)
+    return out
+
+
+def _scoped(uid, conds, actions):
+    """A (chained) SecRule that runs `actions` when every condition holds: conds = [(variable, operator, transformations)]."""
+    out = []
+    for i, (var, op, tr) in enumerate(conds):
+        last = i == len(conds) - 1
+        acts = ([f"id:{uid}", "phase:1", "pass", "nolog"] if i == 0 else []) + [tr] + ([] if last else ["chain"]) + ([actions] if last else [])
+        out.append(("  " if i else "") + f'SecRule {var} "{op}" "{",".join(acts)}"')
+    return out
+
+
+def _modsec_base(body_bytes):
+    return [
+        "SecRuleEngine On", "SecRequestBodyAccess On", f"SecRequestBodyLimit {body_bytes}", "SecRequestBodyNoFilesLimit 262144",
+        "SecRequestBodyLimitAction Reject", "SecRequestBodyJsonDepthLimit 512", "SecArgumentsLimit 1000",
+        "SecPcreMatchLimit 100000", "SecPcreMatchLimitRecursion 100000", "SecResponseBodyAccess Off",
+        "SecTmpDir /tmp", "SecDataDir /tmp", "SecAuditEngine RelevantOnly", 'SecAuditLogRelevantStatus "^(?:5|4(?!04))"',
+        "SecAuditLogParts ABIJDEFHZ", "SecAuditLogType Serial", f"SecAuditLog {LOG_DIR}/audit.json", "SecAuditLogFormat JSON",
+        "SecArgumentSeparator &", "SecCookieFormat 0", f"SecUnicodeMapFile {MODSEC_DIR}/unicode.mapping 20127", "SecStatusEngine Off",
+        'SecRule REQUEST_HEADERS:Content-Type "^(?:application(?:/soap\\+|/)|text/)xml" "id:200000,phase:1,t:none,t:lowercase,pass,nolog,ctl:requestBodyProcessor=XML"',
+        'SecRule REQUEST_HEADERS:Content-Type "^application/json" "id:200001,phase:1,t:none,t:lowercase,pass,nolog,ctl:requestBodyProcessor=JSON"',
+        'SecRule REQUEST_HEADERS:Content-Type "^application/[a-z0-9.-]+[+]json" "id:200006,phase:1,t:none,t:lowercase,pass,nolog,ctl:requestBodyProcessor=JSON"',
+        'SecRule REQBODY_ERROR "!@eq 0" "id:200002,phase:2,t:none,log,deny,status:400,msg:\'Failed to parse request body.\',severity:2"',
+    ]
+
+
+def _modsec_shared(shared, all_sites, crs_dir):
+    """The one rule set every ordinary site inherits: base settings, per-host settings, then the OWASP rules (parsed once)."""
+    body = max(int(s["max_body_mb"]) for s in all_sites if s["mode"] != "off") * 1024 * 1024
+    lines = _modsec_base(body)
+    lines.append("# ---- per-site settings, chosen by the Host header (they must run before the OWASP rules read them) ----")
+    uid = SHARED_BASE_ID
+    ordered = sorted(shared, key=lambda s: (not s["host"].startswith("*."), len(s["host"])))      # wildcards first: an exact name overrides them
+    for s in ordered:
+        rx = _host_rx([_core(s["host"])])
+        specific = _more_specific(s, shared)
+        neg = _host_rx([_core(o["host"]) for o in specific]) if specific else ""
+        base = [("REQUEST_HEADERS:Host", f"@rx {rx}", "t:none,t:lowercase")]
+        if neg:
+            base.append(("REQUEST_HEADERS:Host", f"!@rx {neg}", "t:none,t:lowercase"))
+        sets = [f"setvar:tx.blocking_paranoia_level={int(s['paranoia'])}", f"setvar:tx.inbound_anomaly_score_threshold={int(s['threshold'])}",
+                "setvar:tx.outbound_anomaly_score_threshold=4"]
+        if s["mode"] == "detect":
+            sets.append("ctl:ruleEngine=DetectionOnly")
+        uid += 1
+        lines += _scoped(uid, base, ",".join(sets))
+        for ex in s["exclusions"]:
+            uid += 1
+            conds = base + ([("REQUEST_URI", f"@beginsWith {ex['path']}", "t:none")] if ex.get("path") else [])
+            lines += _scoped(uid, conds, f"ctl:ruleRemoveById={ex['rule']}")
+    # fail closed: a request that matches none of the sites above (for example an absolute-URI request line with a different Host header)
+    # is judged with the strictest values of all sites, never with weaker defaults
+    maxpl = max([int(s["paranoia"]) for s in shared] or [1])
+    minthr = min([int(s["threshold"]) for s in shared] or [5])
+    lines.append(f'SecRule &TX:BLOCKING_PARANOIA_LEVEL "@eq 0" "id:{SHARED_BASE_ID + 90000},phase:1,pass,nolog,t:none,setvar:tx.blocking_paranoia_level={maxpl}"')
+    lines.append(f'SecRule &TX:INBOUND_ANOMALY_SCORE_THRESHOLD "@eq 0" "id:{SHARED_BASE_ID + 90001},phase:1,pass,nolog,t:none,setvar:tx.inbound_anomaly_score_threshold={minthr}"')
+    lines += [f"Include {crs_dir}/crs-setup.conf", f"Include {crs_dir}/rules/*.conf"]
+    return "\n".join(lines) + "\n"
+
+
+def _modsec_dedicated(site):
+    """Rules of one site that has its own custom/OpenAPI rules. nginx-ModSecurity merges the shared OWASP rules in after these (no second parse)."""
+    mode = {"block": "On", "detect": "DetectionOnly"}.get(site["mode"], "Off")
+    lines = [f"SecRuleEngine {mode}",
+             f'SecAction "id:900000,phase:1,pass,nolog,t:none,setvar:tx.blocking_paranoia_level={int(site["paranoia"])}"',
+             f'SecAction "id:900110,phase:1,pass,nolog,t:none,setvar:tx.inbound_anomaly_score_threshold={int(site["threshold"])},setvar:tx.outbound_anomaly_score_threshold=4"']
+    uid = 100000
+    for ex in site["exclusions"]:
+        uid += 1
+        cond = f'REQUEST_URI "@beginsWith {ex["path"]}"' if ex.get("path") else 'REQUEST_URI "@unconditionalMatch"'
+        lines.append(f'SecRule {cond} "id:{uid},phase:1,pass,nolog,ctl:ruleRemoveById={ex["rule"]}"')
+    if site["custom_rules"].strip():
+        lines += ["# ---- custom rules (admin supplied) ----", site["custom_rules"].strip()]
+    oa = site["openapi"]
+    if oa["mode"] != "off" and oa["spec"].strip():
+        lines.append(openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"])[0])
+    return "\n".join(lines) + "\n"
+
+
+def _common(site, gen, feed_on, layout="legacy"):
     """Directives shared by the HTTP and HTTPS server of a site (access control, headers, WAF, maintenance / proxy)."""
     sid = site["id"]
     pdir = f"{gen}/pages/{sid}"
@@ -140,8 +260,9 @@ def _common(site, gen, feed_on):
         L.append(f'  if ($http_user_agent ~* "({SCANNERS})") {{ return 403; }}')
     if site["mode"] == "off":
         L.append("  modsecurity off;")
-    else:
+    elif layout == "legacy" or _dedicated(site):
         L += ["  modsecurity on;", f"  modsecurity_rules_file {gen}/ms-{sid}.conf;"]
+    # layout "shared": nothing here, the server inherits the rule set loaded once at http level
     ch = site["challenge"]
     if ch["enabled"]:
         excl = " ".join(p for p in split_lines(ch["exclude_paths"]) if re.fullmatch(r"/[A-Za-z0-9._~/\-]*", p))
@@ -176,9 +297,9 @@ def _common(site, gen, feed_on):
     return L + loc
 
 
-def _server(site, gen, feed_on):
+def _server(site, gen, feed_on, layout="legacy"):
     host, t = site["host"], site["tls"]
-    body = "\n".join(_common(site, gen, feed_on))
+    body = "\n".join(_common(site, gen, feed_on, layout))
     if not (t["enabled"] and t["source"] != "none"):
         return f"server {{\n  listen {HTTP_PORT};\n  server_name {host};\n{body}\n}}\n"
     cert, key = security.cert_paths(site)
@@ -198,8 +319,25 @@ def _server(site, gen, feed_on):
     return redir + f"server {{\n" + "\n".join(https_listen) + f"\n  server_name {host};\n" + "\n".join(ssl) + f"\n{body}\n}}\n"
 
 
-def render(cfg):
-    """Write a new generation, test it with `nginx -t`, switch `current`, wait for the engine to confirm. Returns (ok, message)."""
+def render(cfg, files_ver=None):
+    """Write a new generation, test it with `nginx -t`, switch `current`, wait for the engine to confirm. Returns (ok, message).
+    One render at a time per replica; the result is remembered in LAST so an unchanged configuration is not applied twice."""
+    with RENDER_LOCK:
+        if files_ver is None:
+            try:
+                files_ver = store.state_version()[1]
+            except Exception:  # noqa: BLE001
+                files_ver = 0
+        key = (hashlib.sha1(json.dumps(cfg, sort_keys=True).encode()).hexdigest(), files_ver)  # nosec B324 - change detection only
+        t0 = time.time()
+        ok, msg, stats = _render(cfg)
+        if ok:
+            stats.update(total_ms=int((time.time() - t0) * 1000), at=time.time())
+            LAST.update(key=key, stats=stats)
+        return ok, msg
+
+
+def _render(cfg):
     for d in (LOG_DIR, RENDER_DIR, "/tmp/nx"):      # nosec B108 - /tmp is the pod's private emptyDir, not a shared host directory
         os.makedirs(d, exist_ok=True)
     gen = os.path.join(RENDER_DIR, f"gen-{int(time.time() * 1000)}")
@@ -217,6 +355,10 @@ def render(cfg):
         crs_active, crs_staged = crsupdate.active_dir(cfg), crsupdate.staged_dir(cfg)
         if not os.path.isdir(crs_active):
             raise ValueError("the active OWASP rule set directory is missing")
+        protected = [s for s in sites if s["mode"] != "off"]
+        canary = crs_staged is not None and any(s["crs_channel"] == "canary" for s in protected)
+        layout = "shared" if (SHARED_RULES and not canary) else "legacy"
+        t_render = time.time()
         feed_src = feeds.feed_file() if st["feeds"]["enabled"] else None
         feed_on = bool(feed_src)
         if feed_on:
@@ -247,15 +389,24 @@ def render(cfg):
                     f.write(pages.fill(html, s["host"]))
             if s["mode"] != "off":
                 is_canary = s["crs_channel"] == "canary" and crs_staged is not None
-                with open(f"{gen}/ms-{s['id']}.conf", "w") as f:
-                    f.write(_modsec_site(s, gen, crs_staged if is_canary else crs_active, is_canary))
+                if layout == "legacy":
+                    with open(f"{gen}/ms-{s['id']}.conf", "w") as f:
+                        f.write(_modsec_site(s, gen, crs_staged if is_canary else crs_active, is_canary))
+                elif _dedicated(s):
+                    with open(f"{gen}/ms-{s['id']}.conf", "w") as f:
+                        f.write(_modsec_dedicated(s))
             if s["auth"]["enabled"] and s["auth"]["users"]:
                 with open(f"{gen}/htpasswd-{s['id']}", "w") as f:
                     f.write("".join(f"{u}:{h}\n" for u, h in s["auth"]["users"].items()))
                 os.chmod(f"{gen}/htpasswd-{s['id']}", 0o640)
-            servers += _server(s, gen, feed_on)
+            servers += _server(s, gen, feed_on, layout)
+        shared_on = layout == "shared" and bool(protected)
+        if shared_on:
+            with open(f"{gen}/ms-shared.conf", "w") as f:
+                f.write(_modsec_shared([s for s in protected if not _dedicated(s)], sites, crs_active))
+        modsec_http = f"  modsecurity on;\n  modsecurity_rules_file {gen}/ms-shared.conf;\n" if shared_on else ""
         any_tls = any(s["tls"]["enabled"] and s["tls"]["source"] != "none" for s in sites)
-        default_tls = (f"  server {{ listen {TLS_PORT} ssl default_server; ssl_reject_handshake on; }}\n" if any_tls else "")
+        default_tls = (f"  server {{ listen {TLS_PORT} ssl default_server; ssl_reject_handshake on; modsecurity off; }}\n" if any_tls else "")
         conf = f"""load_module /etc/nginx/modules/ngx_http_modsecurity_module.so;
 load_module /etc/nginx/modules/ngx_http_js_module.so;
 load_module /etc/nginx/modules/ngx_http_headers_more_filter_module.so;
@@ -285,11 +436,12 @@ http {{
   limit_req_zone $binary_remote_addr zone=chal_verify:10m rate=10r/s;
   geo $shield_feed {{ default 0;{(chr(10) + "    include " + gen + "/feeds.geo;") if feed_on else ""} }}
   geo $shield_cc {{ default ""; include {gen}/countries.geo; }}
-{ct_maps}{real_ip}{zones}
+{modsec_http}{ct_maps}{real_ip}{zones}
   server {{
     listen {HTTP_PORT} default_server;
     server_name _;
     access_log off;
+    modsecurity off;
     location = /__shieldwaf_health {{ return 200 "ok {os.path.basename(gen)}\\n"; }}
     location / {{ return 444; }}
   }}
@@ -297,14 +449,24 @@ http {{
 """
         with open(f"{gen}/nginx.conf", "w") as f:
             f.write(conf)
-        r = subprocess.run(["/usr/sbin/nginx", "-t", "-c", f"{gen}/nginx.conf"], capture_output=True, text=True, timeout=120)
+        t_test = time.time()
+        r = subprocess.run(["/usr/sbin/nginx", "-t", "-c", f"{gen}/nginx.conf"], capture_output=True, text=True, timeout=max(120, 3 * len(sites)))
         if r.returncode != 0:
             shutil.rmtree(gen, ignore_errors=True)
-            return False, (r.stderr or r.stdout).strip()[-1500:]
-        return _activate(gen)
+            return False, (r.stderr or r.stdout).strip()[-1500:], {}
+        wait_s = 30 if layout == "shared" else int(max(30, 5 + 1.5 * len(protected)))      # one full rule set per site is slow to load
+        with open(f"{gen}/.tested", "w") as f:           # the engine does not test the same file a second time
+            f.write("ok")
+        with open(f"{gen}/.wait", "w") as f:
+            f.write(str(wait_s))
+        t_act = time.time()
+        ok, msg = _activate(gen, wait_s)
+        return ok, msg, {"layout": layout, "sites": len(sites), "dedicated": sum(1 for s in protected if _dedicated(s)),
+                         "write_ms": int((t_test - t_render) * 1000), "test_ms": int((t_act - t_test) * 1000),
+                         "reload_ms": int((time.time() - t_act) * 1000)}
     except Exception as e:  # noqa: BLE001
         shutil.rmtree(gen, ignore_errors=True)
-        return False, f"render error: {e}"
+        return False, f"render error: {e}", {}
 
 
 def _swap(target):
@@ -322,7 +484,7 @@ def engine_alive():
         return False
 
 
-def _activate(gen):
+def _activate(gen, wait_s=30):
     link = os.path.join(RENDER_DIR, "current")
     prev = os.path.realpath(link) if os.path.islink(link) else None
     status = os.path.join(RENDER_DIR, "reload.status")
@@ -333,7 +495,7 @@ def _activate(gen):
         _prune()
         return True, "applied (the engine is not running yet; it will start with this config)"
     request_reload()
-    for _ in range(300):                                  # up to 30 s: every site loads the whole rule set on reload
+    for _ in range(int(wait_s * 10)):                     # the engine confirms once the new generation answers
         time.sleep(0.1)
         try:
             with open(status) as f:
@@ -349,7 +511,7 @@ def _activate(gen):
             return False, "the engine refused the new configuration (it keeps running the previous one)"
     if prev:
         _swap(prev)
-    return False, "no answer from the engine within 30 s; previous configuration restored"
+    return False, f"no answer from the engine within {wait_s} s; previous configuration restored"
 
 
 def request_reload():

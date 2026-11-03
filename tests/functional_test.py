@@ -520,6 +520,8 @@ s, html, _ = V.post("/password", {"old": VPW, "new": NVPW, "new2": NVPW}, "/sett
 s, html, _ = V.req("/dashboard")
 check("users: after choosing a password the viewer can see the dashboard", "Requests per hour" in html)
 check("users: the viewer does not see admin menus", "Users" not in re.sub(r"<[^>]*>", " ", html).split("Signed in")[0] or True)
+s, vh, _ = V.req("/dashboards")
+check("a read-only viewer can open the dashboards", s == 200 and "Requests by status" in vh)
 s, _, _ = V.req("/users")
 check("users: a viewer cannot open the user list (403)", s == 403, s)
 s, _, _ = V.req("/audit")
@@ -731,6 +733,21 @@ s, html, _ = P.post("/password", {"old": PW, "new": NEWPW, "new2": NEWPW}, "/set
 check("password change works", "Password changed" in html)
 s, html, _ = P2.req("/dashboard")
 check("changing the password signs out the other session", "Sign in" in html)
+
+# ================================================================= NEW in 2.3: built-in Grafana-style dashboards
+s, html, _ = P.req("/dashboards?range=24h&refresh=0")
+check("Dashboards page renders charts and the main panels", s == 200 and html.count("<svg") >= 6 and "Requests by status" in html and "Most triggered OWASP rules" in html
+      and "Busiest sites" in html and "Replicas" in html, html[:100])
+check("...with real numbers from the traffic of this test run (requests > 0, sites listed)", re.search(r'class="gv"[^>]*>[1-9]', html) is not None and "shield.test" in html)
+ok_all = all(P.req(f"/dashboards?range={r}&refresh=0")[0] == 200 for r in ("1h", "6h", "24h", "7d"))
+check("every time range (1h, 6h, 24h, 7d) renders", ok_all)
+s, html2, _ = P.req("/dashboards?range=evil%22%3E%3Cscript%3E&refresh=abc")
+check("unknown range / refresh values fall back safely (no error, nothing reflected)", s == 200 and "<script>" not in html2 and "evil" not in html2)
+s, html3, _ = P.req("/dashboards?range=1h&refresh=30")
+check("auto-refresh is a plain meta tag (the panel allows no inline scripts)", 'http-equiv="refresh" content="30"' in html3 and "<script>" not in html3)
+P0 = Panel()
+s, _h, final = P0.req("/dashboards")
+check("the dashboards need a login", "/login" in final)
 
 # ================================================================= import validation + audit
 evil = {"version": "2.0", "sites": [{"host": "evil.shield.test", "upstream": "http://169.254.169.254", "mode": "block"}]}

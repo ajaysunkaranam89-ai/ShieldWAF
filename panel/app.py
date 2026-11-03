@@ -19,25 +19,34 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import alerts
 import background
+import charts
+import cluster
 import crsupdate
 import engine
 import feeds
 import openapi
 import pages
 import security
+import sharedfs
 import store
 
-VERSION = "2.2"
+VERSION = cluster.VERSION
 app = Flask(__name__)
 store.init_db()
 
 # --- secrets -----------------------------------------------------------------------------------
+# Created once for the whole cluster (sharedfs.ensure: the first replica to start wins, the others adopt its copy).
 os.makedirs(store.DATA, exist_ok=True)
 _sk = os.path.join(store.DATA, "secret.key")
-if not os.path.exists(_sk):
-    fd = os.open(_sk, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+
+def _new_secret_file(path, text):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(secrets.token_hex(32))
+        f.write(text)
+
+
+sharedfs.ensure("secret.key", lambda: _new_secret_file(_sk, secrets.token_hex(32)))
 app.secret_key = open(_sk).read().strip()
 app.config.update(SESSION_COOKIE_NAME="__Host-shieldwaf", SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
                   SESSION_COOKIE_SAMESITE="Strict", MAX_CONTENT_LENGTH=2 * 1024 * 1024)
@@ -47,10 +56,7 @@ _bc = os.path.join(store.DATA, "bootstrap.code")
 
 def bootstrap_code():
     """One-time code shown ONLY in the panel container log; needed to create the first admin account."""
-    if not os.path.exists(_bc):
-        fd = os.open(_bc, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(secrets.token_hex(4))
+    sharedfs.ensure("bootstrap.code", lambda: _new_secret_file(_bc, secrets.token_hex(4)))
     return open(_bc).read().strip()
 
 
@@ -204,7 +210,7 @@ def me():
     return session.get("user", "?")
 
 
-VIEWER_OK = {"dashboard", "index", "sites", "site_edit", "pages_view", "logs", "bans", "intel", "settings", "security_view", "logout", "password", "static", "healthz"}
+VIEWER_OK = {"dashboard", "dashboards", "index", "cluster_view", "sites", "site_edit", "pages_view", "logs", "bans", "intel", "settings", "security_view", "logout", "password", "static", "healthz"}
 POST_OK_FOR_VIEWER = {"logout", "password", "security_view"}
 
 
@@ -222,8 +228,12 @@ def apply_cfg(cfg, action, detail=""):
     ok, msg = engine.render(cfg)
     if ok:
         store.save(cfg)
+        cluster.mark_applied_now()
         store.audit(me(), action, detail, client_ip())
-        flash(f"{action}: {msg}", "ok")
+        # with several replicas the others apply the saved change by themselves; wait until they have, and say so
+        slow = engine.LAST.get("stats", {}).get("layout") != "shared"
+        _done, _total, peers = cluster.wait_for_peers(cluster.current_version(), timeout=60 if slow else 25)
+        flash(f"{action}: {msg}" + (f"; {peers}" if peers else ""), "ok")
     else:
         flash(f"NOT applied (old config kept). {msg}", "err")
         alerts.notify("config_failed", f"Configuration change refused: {action}", str(msg)[:300])
@@ -420,9 +430,13 @@ def setup():
         elif password_error(pw, user):
             flash(password_error(pw, user), "err")
         else:
-            cfg["users"][user] = {"hash": generate_password_hash(pw), "created": time.time(), "totp_secret": "", "totp_enabled": False,
-                                  "totp_last": 0, "recovery": [], "role": "admin", "must_change": False}
-            store.save(cfg)
+            with store._lock:          # two replicas must never both create "the first" administrator
+                cfg = store.load()
+                if cfg["users"]:
+                    return redirect(url_for("login"))
+                cfg["users"][user] = {"hash": generate_password_hash(pw), "created": time.time(), "totp_secret": "", "totp_enabled": False,
+                                      "totp_last": 0, "recovery": [], "role": "admin", "must_change": False}
+                store.save(cfg)
             store.audit(user, "setup", "admin account created", client_ip())
             engine.render(cfg)
             start_session(user)
@@ -470,20 +484,22 @@ def login_2fa():
         if _locked(name, ip):
             flash("Too many failed attempts. Try again in 15 minutes.", "err")
             return render_template("login_2fa.html"), 429
-        cfg = store.load()
-        u = cfg["users"].get(name)
-        code = request.form.get("code", "").strip()
-        step = security.totp_verify(u["totp_secret"], code, u.get("totp_last", 0)) if u else 0
-        used_recovery = False
-        if not step and u:
-            h = hashlib.sha256(re.sub(r"[\s-]", "", code).lower().encode()).hexdigest()
-            if h in u.get("recovery", []):
-                u["recovery"].remove(h)
-                used_recovery = True
+        with store._lock:          # one check at a time across replicas: a code or recovery code can never be used twice
+            cfg = store.load()
+            u = cfg["users"].get(name)
+            code = request.form.get("code", "").strip()
+            step = security.totp_verify(u["totp_secret"], code, u.get("totp_last", 0)) if u else 0
+            used_recovery = False
+            if not step and u:
+                h = hashlib.sha256(re.sub(r"[\s-]", "", code).lower().encode()).hexdigest()
+                if h in u.get("recovery", []):
+                    u["recovery"].remove(h)
+                    used_recovery = True
+            if step or used_recovery:
+                if step:
+                    u["totp_last"] = step
+                store.save(cfg)
         if step or used_recovery:
-            if step:
-                u["totp_last"] = step
-            store.save(cfg)
             start_session(name)
             store.audit(name, "login", "2fa recovery code used" if used_recovery else "2fa", ip)
             return redirect(url_for("dashboard"))
@@ -587,6 +603,90 @@ def dashboard():
         under=sum(1 for s in cfg["sites"] if s["under_attack"]), maint=sum(1 for s in cfg["sites"] if s["maintenance"]), bans=sum(1 for b in cfg["bans"] if b["until"] > now), up=engine_up())
 
 
+# --- dashboards (Grafana-style) ----------------------------------------------------------------
+RANGES = {"1h": (3600, 60, "Last 1 hour"), "6h": (6 * 3600, 300, "Last 6 hours"), "24h": (86400, 900, "Last 24 hours"), "7d": (7 * 86400, 3600, "Last 7 days")}
+REFRESHES = (0, 10, 30, 60)
+
+
+@app.route("/dashboards")
+def dashboards():
+    rng = request.args.get("range", "24h")
+    rng = rng if rng in RANGES else "24h"
+    try:
+        refresh = int(request.args.get("refresh", "30"))
+    except ValueError:
+        refresh = 30
+    refresh = refresh if refresh in REFRESHES else 30
+    span, bucket, label = RANGES[rng]
+    now = time.time()
+    first = int((now - span) // bucket)
+    last = int(now // bucket)
+    starts = [(first + i + 1) * bucket for i in range(last - first)]
+    since = starts[0] if starts else now - span
+    con = store.db()
+    q = lambda sql, *a: con.execute(sql, a).fetchall()  # noqa: E731
+    bk = store.bucket_sql(bucket)
+    acc = {int(r["k"]): dict(r) for r in q(
+        f"SELECT {bk} k, SUM(CASE WHEN status<400 THEN 1 ELSE 0 END) ok, SUM(CASE WHEN status>=400 AND status<500 AND status NOT IN (403,429) THEN 1 ELSE 0 END) c4, "  # nosec B608 - bk is a code constant
+        "SUM(CASE WHEN status=403 THEN 1 ELSE 0 END) c403, SUM(CASE WHEN status=429 THEN 1 ELSE 0 END) c429, SUM(CASE WHEN status>=500 THEN 1 ELSE 0 END) c5, "
+        "AVG(rt) rt FROM access WHERE ts>=? GROUP BY k", since)}
+    ev = {int(r["k"]): dict(r) for r in q(f"SELECT {bk} k, SUM(CASE WHEN blocked=1 THEN 1 ELSE 0 END) b, SUM(CASE WHEN blocked=0 THEN 1 ELSE 0 END) d "  # nosec B608
+                                   "FROM events WHERE ts>=? GROUP BY k", since)}
+    keys = [int(t // bucket) for t in starts]      # starts[i] is the first second of bucket number starts[i] // bucket
+
+    def col(src, field):
+        return [int((src.get(k) or {}).get(field) or 0) for k in keys]
+
+    ok, c4, c403, c429, c5 = (col(acc, f) for f in ("ok", "c4", "c403", "c429", "c5"))
+    blocked, detected = col(ev, "b"), col(ev, "d")
+    rt = [round(float((acc.get(k) or {}).get("rt") or 0) * 1000, 1) for k in keys]
+    total_req = sum(ok) + sum(c4) + sum(c403) + sum(c429) + sum(c5)
+    nonzero_rt = [v for v in rt if v]
+    ch = charts
+    P = ch.PALETTE
+    stat = [
+        {"title": "Requests", "value": ch.human(total_req), "color": P["blue"], "spark": ch.sparkline([a + b + c + d + e for a, b, c, d, e in zip(ok, c4, c403, c429, c5)], P["blue"])},
+        {"title": "Blocked by the WAF (403)", "value": ch.human(sum(c403)), "color": P["red"], "spark": ch.sparkline(c403, P["red"])},
+        {"title": "Rate limited (429)", "value": ch.human(sum(c429)), "color": P["orange"], "spark": ch.sparkline(c429, P["orange"])},
+        {"title": "Server errors (5xx)", "value": ch.human(sum(c5)), "color": P["yellow"], "spark": ch.sparkline(c5, P["yellow"])},
+        {"title": "Blocked share", "value": f"{(100.0 * (sum(c403) + sum(c429)) / total_req) if total_req else 0:.1f}%", "color": P["purple"],
+         "spark": ch.sparkline([(a + b) for a, b in zip(c403, c429)], P["purple"])},
+        {"title": "Average response time", "value": f"{(sum(nonzero_rt) / len(nonzero_rt)) if nonzero_rt else 0:.0f} ms", "color": P["green"], "spark": ch.sparkline(rt, P["green"])},
+    ]
+
+    def S(name, color, values):
+        return {"name": name, "color": color, "values": values}
+
+    p_req = ch.timeseries(starts, [S("2xx / 3xx", P["green"], ok), S("4xx", P["yellow"], c4), S("403 blocked", P["red"], c403), S("429 limited", P["orange"], c429),
+                                   S("5xx", P["purple"], c5)], kind="bar", stacked=True, span=span)
+    p_att = ch.timeseries(starts, [S("blocked", P["red"], blocked), S("detected only", P["orange"], detected)], kind="area", span=span)
+    p_rt = ch.timeseries(starts, [S("average", P["cyan"], rt)], kind="area", span=span, unit=" ms", W=1300, h=170)
+
+    def legend(series):
+        return [{"name": n, "color": c, "total": ch.human(sum(v)), "max": ch.human(max(v) if v else 0)} for n, c, v in series]
+
+    leg_req = legend([("2xx / 3xx", P["green"], ok), ("4xx", P["yellow"], c4), ("403 blocked", P["red"], c403), ("429 limited", P["orange"], c429), ("5xx", P["purple"], c5)])
+    leg_att = legend([("blocked", P["red"], blocked), ("detected only", P["orange"], detected)])
+
+    def bars(rows, key, val, extra=None, color=P["blue"], fmt=ch.human):
+        top = max([r[val] for r in rows] + [1])
+        return [{"label": str(r[key])[:60] or "(none)", "value": fmt(r[val]), "pct": max(2, round(100 * r[val] / top)), "color": color,
+                 "extra": (f"{extra(r)}" if extra else "")} for r in rows]
+
+    sites_rows = q("SELECT host, COUNT(*) c, SUM(CASE WHEN status IN (403,429) THEN 1 ELSE 0 END) b FROM access WHERE ts>=? GROUP BY host ORDER BY c DESC LIMIT 8", since)
+    sites_rows = [{"host": r["host"], "c": r["c"], "b": r["b"] or 0} for r in sites_rows]
+    rules_rows = q("SELECT rule_id, MIN(msg) msg, COUNT(*) c FROM events WHERE rule_id!='' AND ts>=? GROUP BY rule_id ORDER BY c DESC LIMIT 8", since)
+    ip_rows = q("SELECT ip, COUNT(*) c FROM access WHERE ts>=? AND status IN (403,429) GROUP BY ip ORDER BY c DESC LIMIT 8", since)
+    status_rows = q("SELECT status, COUNT(*) c FROM access WHERE ts>=? GROUP BY status ORDER BY c DESC LIMIT 8", since)
+    cfg = store.load()
+    return render_template(
+        "dashboards.html", rng=rng, ranges=RANGES, label=label, refresh=refresh, refreshes=REFRESHES, stat=stat, p_req=p_req, p_att=p_att, p_rt=p_rt, leg_req=leg_req, leg_att=leg_att,
+        top_sites=bars(sites_rows, "host", "c", extra=lambda r: f"{r['b']} blocked"), top_rules=bars(rules_rows, "rule_id", "c", color=P["red"], extra=lambda r: (r["msg"] or "")[:60]),
+        top_ips=bars(ip_rows, "ip", "c", color=P["orange"]), status=bars(status_rows, "status", "c", color=P["cyan"]),
+        nodes=cluster.nodes(), sites_n=len(cfg["sites"]), up=engine_up(), under=sum(1 for s in cfg["sites"] if s["under_attack"]),
+        maint=sum(1 for s in cfg["sites"] if s["maintenance"]), bans=sum(1 for b in cfg["bans"] if b["until"] > now), now=now)
+
+
 # --- sites -------------------------------------------------------------------------------------
 @app.route("/sites")
 def sites():
@@ -648,6 +748,7 @@ def site_delete(sid):
         if apply_cfg(cfg, "site deleted", s["host"]):
             import shutil
             shutil.rmtree(os.path.join(security.CERT_DIR, sid), ignore_errors=True)
+            sharedfs.forget(f"certs/{sid}")
     return redirect(url_for("sites"))
 
 
@@ -1190,19 +1291,43 @@ def metrics():
     return Response("\n".join(lines) + "\n", mimetype="text/plain")
 
 
+
 @app.route("/api/status")
 def api_status():
     cfg = store.load()
     return jsonify(engine_up=engine_up(), sites=[{"host": s["host"], "mode": s["mode"], "maintenance": s["maintenance"]} for s in cfg["sites"]])
 
 
+@app.route("/cluster")
+def cluster_view():
+    rows = cluster.nodes()
+    alive = [n for n in rows if n["alive"]]
+    newest = max([int(n["applied_cfg"]) for n in alive] or [0])
+    warn = []
+    if len(alive) > 1 and not sharedfs.enabled():
+        warn.append("More than one replica is running but shared files are off (SHIELD_DATA_KEY or PostgreSQL is missing). "
+                    "Certificates and keys are NOT shared: scale back to one replica or fix the secret (docs/INSTALL.md, high availability).")
+    for n in alive:
+        if not n["ok"]:
+            warn.append(f"{n['name']} cannot apply the newest configuration: {n['msg']}")
+        if not n["engine_ok"]:
+            warn.append(f"The firewall engine on {n['name']} is not answering.")
+    return render_template("cluster.html", nodes=rows, alive=len(alive), in_sync=sum(1 for n in alive if n["ok"] and int(n["applied_cfg"]) >= newest),
+                           stats=engine.LAST.get("stats", {}), me=store.NODE, ha=sharedfs.enabled(), warn=warn)
+
+
 def _start():
-    cfg = store.load()
-    if not cfg["settings"].get("metrics_token"):
-        cfg["settings"]["metrics_token"] = secrets.token_urlsafe(32)
-        store.save(cfg)
-    ok, msg = engine.render(cfg)
+    with store._lock:                  # replicas start together: only one of them creates the metrics token
+        cfg = store.load()
+        if not cfg["settings"].get("metrics_token"):
+            cfg["settings"]["metrics_token"] = secrets.token_urlsafe(32)
+            store.save(cfg)
+    sharedfs.sync_in()
+    ok, msg = engine.render(cfg, files_ver=store.state_version()[1])
     print(f"[shieldwaf] initial render: {ok} {msg}", flush=True)
+    if ok:
+        cluster.mark_applied_now()
+    cluster.start()
     background.start(lambda c: engine.render(c))
 
 

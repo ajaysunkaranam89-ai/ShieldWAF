@@ -1,9 +1,12 @@
-# ShieldWAF 2.0 on Kubernetes: one pod = engine (nginx + ModSecurity + OWASP CRS) + panel (HTTPS GUI), sharing only a data volume.
-# Build and load the images first (see README): docker build -t shieldwaf:2.2 . ; docker build -t shieldwaf-db:16 db ;
-# kind load docker-image shieldwaf:2.2 shieldwaf-db:16 --name mycluster
-# No secrets are stored here. Create the database secret first (random password, kept only in the cluster):
+# A Shield WAF 2.3 on Kubernetes, highly available: several identical replicas (pods), each = engine (nginx + ModSecurity + OWASP CRS) +
+# panel (HTTPS GUI), sharing only a small private scratch volume. All replicas use one PostgreSQL database: configuration, sessions, logs
+# and the (encrypted) shared files live there, so any replica can fail, restart or be replaced without losing anything.
+# Build and load the images first (see docs/INSTALL.md): docker build -t shieldwaf:2.3 . ; docker build -t shieldwaf-db:16 db ;
+# kind load docker-image shieldwaf:2.3 shieldwaf-db:16 --name mycluster
+# No secrets are stored here. Create the secret first (random database password + key for the shared files, kept only in the cluster):
 #   sh scripts/create-db-secret.sh            (or .\scripts\create-db-secret.ps1 on Windows)
-# The admin account is created in the browser on first start.
+# The admin account is created in the browser on first start. Change `replicas` below (2 = redundancy, 3 = survives a node loss while
+# a rolling update runs); one replica works too.
 #
 # Hardening in this file: "restricted" Pod Security level, non-root, read-only root filesystem, all capabilities dropped,
 # seccomp RuntimeDefault, no service-account token, resource limits, NetworkPolicy (default deny + explicit allows),
@@ -17,26 +20,18 @@ metadata:
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/warn: restricted
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: shieldwaf-data
-  namespace: shieldwaf
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 2Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: shieldwaf
   namespace: shieldwaf
 spec:
-  replicas: 1
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate            # new replicas start and become ready before old ones stop: no downtime on upgrades
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: shieldwaf
@@ -46,6 +41,14 @@ spec:
         app: shieldwaf
     spec:
       automountServiceAccountToken: false      # the WAF never talks to the Kubernetes API
+      terminationGracePeriodSeconds: 45
+      topologySpreadConstraints:               # spread the replicas over different nodes when there are several (never blocks scheduling)
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: shieldwaf
       securityContext:
         runAsNonRoot: true
         runAsUser: 10101                       # high unprivileged id (no collision with host users)
@@ -55,9 +58,13 @@ spec:
           type: RuntimeDefault
       containers:
         - name: engine
-          image: shieldwaf:2.2
+          image: shieldwaf:2.3
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/engine-entrypoint.sh"]
+          lifecycle:
+            preStop:                           # keep serving for a moment after the pod is taken out of the Service (no dropped requests)
+              exec:
+                command: ["sleep", "8"]
           ports:
             - containerPort: 8080
             - containerPort: 8443
@@ -93,7 +100,7 @@ spec:
             #   mountPath: /certs
             #   readOnly: true
         - name: panel
-          image: shieldwaf:2.2
+          image: shieldwaf:2.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9000
@@ -103,6 +110,15 @@ spec:
                 secretKeyRef:
                   name: shieldwaf-db
                   key: SHIELD_DB_URL
+            - name: SHIELD_DATA_KEY         # encrypts the files replicas share through the database (certificates, keys, alert secrets)
+              valueFrom:
+                secretKeyRef:
+                  name: shieldwaf-db
+                  key: SHIELD_DATA_KEY
+            - name: SHIELD_NODE             # this replica's name, shown on the Cluster page
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -140,9 +156,9 @@ spec:
             #   mountPath: /panel-tls
             #   readOnly: true
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: shieldwaf-data
+        - name: data                           # private to this replica (rendered configuration, logs, local copies of shared files); rebuilt from the database
+          emptyDir:
+            sizeLimit: 2Gi
         - name: tmp-engine
           emptyDir:
             sizeLimit: 256Mi
@@ -184,6 +200,18 @@ spec:
     - name: https
       port: 9000
       targetPort: 9000
+---
+# At least one replica must stay up during voluntary disruptions (node drain, upgrades of the cluster).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shieldwaf
+  namespace: shieldwaf
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: shieldwaf
 ---
 # Default deny, then allow only what is needed.
 apiVersion: networking.k8s.io/v1
@@ -258,6 +286,7 @@ spec:
       containers:
         - name: postgres
           image: shieldwaf-db:16                 # built from db/Dockerfile (official PostgreSQL, pinned, OS fixes, unused gosu removed)
+          args: ["postgres", "-c", "max_connections=200"]    # each replica keeps about 20 connections
           ports:
             - containerPort: 5432
           env:

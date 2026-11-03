@@ -12,11 +12,11 @@ was designed and tested with security first. Treat the table as the author's own
 |---|---|---|
 | Blocking common web attacks (SQL injection, XSS, file inclusion, command injection, Log4Shell, scanners) | **Good** (same rule set most commercial WAFs use) | 13 attack types blocked in the automated tests on every release |
 | Resistance to determined bypass attempts | **Moderate**: the rule set is pattern-based; positive model, OpenAPI validation, reputation, country rules and the challenge add non-pattern layers | not tested by an outside attacker |
-| Security of the admin panel | **Strong for its size**: HTTPS only, two-factor login, lockout, revocable sessions, strict CSP, IP allow-list, roles | 185 automated checks incl. abuse cases; OWASP ZAP baseline 0 failures |
+| Security of the admin panel | **Strong for its size**: HTTPS only, two-factor login, lockout, revocable sessions, strict CSP, IP allow-list, roles | 192 automated checks incl. abuse cases; OWASP ZAP baseline 0 failures |
 | Container / cluster hardening | **Strong**: non-root, read-only filesystem, no capabilities, restricted Pod Security, network policies | Trivy configuration scan: 0 medium+ findings |
 | Supply chain | **Good**: base images pinned by digest, image scans clean (0 high/critical), rule updates need human approval | Trivy image scans; see `docs/SECURITY-REVIEW.md` |
 | Independent assurance (audit, pentest, certification) | **None yet** | you should commission one for high-value use |
-| Availability | single instance, no high availability | see limits below |
+| Availability | **2+ replicas** behind one Service, rolling updates, automatic leader failover; the database is the single point of failure unless you use a replicated one | high-availability suite: kill a replica, stop the database, rolling restart under load |
 | Network (volumetric) DDoS | **not provided**: needs your cloud provider or a CDN | `docs/DDOS.md` |
 
 **Suitable for:** labs, internal applications, small and medium sites, defence in depth next to other controls, learning, and as a base to
@@ -69,11 +69,18 @@ no privilege escalation; seccomp RuntimeDefault; no service-account token; separ
 the data volume (no shared process namespace, no signals); resource limits; NetworkPolicy default-deny with explicit allows and no
 egress to cloud-metadata addresses; base image pinned by digest; image scanned with Trivy.
 
+### Replicas and shared secrets (high availability)
+Replicas share certificates, private keys, alert secrets and the panel's session key through the PostgreSQL database. Everything stored there is **encrypted and authenticated** (Fernet:
+AES-128-CBC with HMAC-SHA-256) with a key (`SHIELD_DATA_KEY`) that exists only in the cluster secret `shieldwaf-db`, so a database dump alone does not reveal a private key, and someone who can only write to the
+database cannot plant files on a replica (forged rows fail authentication; only a fixed list of file names is ever written; archives are unpacked with path checks). Whoever can read **both** the database and the
+secret can read the shared files, so protect them separately (RBAC on the secret, encrypted database volume). The key cannot be rotated from the GUI yet: to rotate it, create a new key, restart all replicas, and re-upload the certificates.
+Administrator actions are serialised across replicas with a database lock (no lost updates, a 2FA or recovery code can never be used twice), and the replicas only ever talk to the database, never to each other.
+
 ## What it does NOT do (be honest with your auditors)
-- It is **not a certified or independently audited product.** An independent audit can only be done by someone other than the author. What exists is a documented **self-review** (`docs/SECURITY-REVIEW.md`: static analysis, manifest and image scans, a web-scanner baseline, 185 automated attack and abuse tests, all fixed or explained) and a CI workflow that repeats the scans. Commission a third-party penetration test and code review before relying on it for regulated or high-value systems.
+- It is **not a certified or independently audited product.** An independent audit can only be done by someone other than the author. What exists is a documented **self-review** (`docs/SECURITY-REVIEW.md`: static analysis, manifest and image scans, a web-scanner baseline, 192 automated attack and abuse tests, all fixed or explained) and a CI workflow that repeats the scans. Commission a third-party penetration test and code review before relying on it for regulated or high-value systems.
 - The OWASP rule set is pattern-based, so a determined attacker may find bypasses that a commercial semantic engine catches. This is reduced, not removed: the positive security model, reputation feeds, country rules, the anti-bot challenge and flood defence do not depend on attack patterns. Run new sites in detect mode first, tune, then block, and keep your applications patched: a WAF reduces risk, it does not fix vulnerable code.
 - **No volumetric DDoS protection.** That is physically impossible inside a cluster: the link is full before traffic reaches any pod. Only application-layer floods are handled here; put your cloud provider's DDoS protection or a CDN in front (`docs/DDOS.md`).
-- A single panel/engine replica (no high availability); PostgreSQL removes the file-based state, so a managed replicated database plus a second instance is the path to HA; the data volume is a single point of failure, so back it up and plan maintenance windows. Several administrators and viewers are supported.
+- **The database is the single point of failure.** The firewall replicas keep working without it, but configuration changes and the start of new replicas need it; use a managed replicated PostgreSQL for real redundancy. Rate limits are counted per replica. Several administrators and viewers are supported.
 - No FIPS-validated cryptography and no hardware key (WebAuthn) support; two-factor is TOTP.
 - The anti-bot challenge stops simple bots and scripts that cannot run JavaScript; it is not a defence against attackers driving real browsers.
 - Login-gate passwords use SHA-512 crypt (strong, slow) but the gate is basic authentication; use it over HTTPS only.

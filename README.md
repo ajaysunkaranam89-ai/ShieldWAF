@@ -13,12 +13,15 @@ into one product:
 - **Engine:** nginx + **ModSecurity v3** + the **OWASP Core Rule Set**, with TLS termination and an anti-bot challenge.
 - **Control panel (GUI):** HTTPS-only web app: sites, TLS certificates, maintenance switch, page editor, login gate, rate limits,
   IP lists, auto-ban, attack log, dashboard, two-factor login, audit trail, backup, Prometheus metrics.
-- **One pod, two containers**, hardened (non-root, read-only filesystem, no capabilities, network policy). About 230 MB RAM with four sites.
+- **Highly available:** two or more identical replicas (pods) behind one Service, all sharing one PostgreSQL database; a replica can crash,
+  restart or be replaced and nothing is lost. Each replica is two hardened containers (non-root, read-only filesystem, no capabilities,
+  network policy). About 250 MB RAM per replica with four sites.
+- **Fast reloads:** the OWASP rules are loaded once and shared by all sites, so 80 sites reload in a few seconds instead of minutes.
 
 **Free and open source** (Apache-2.0), for Kubernetes (tested on kind) and the cloud. No secrets are stored in this repo: the database
 password is generated in your cluster and the admin account is created in your browser on first start.
 
-> **Provided as is, without warranty, and not independently audited.** It is built on proven components and tested with 185 automated
+> **Provided as is, without warranty, and not independently audited.** It is built on proven components and tested with 192 automated
 > checks, but it has not been reviewed or certified by an outside party. Read **[How secure is it?](SECURITY.md#how-secure-is-it-the-honest-summary)**
 > and the limits below before using it in production, and commission an independent test for high-value systems.
 
@@ -37,6 +40,7 @@ password is generated in your cluster and the admin account is created in your b
 | [`CONTRIBUTING.md`](CONTRIBUTING.md), [`tests/README.md`](tests/README.md) | helping, and running the test suite |
 
 ![Dashboard](docs/images/gui-dashboard.png)
+![Grafana-style dashboards](docs/images/gui-dashboards.jpg)
 
 ## Features
 
@@ -57,13 +61,15 @@ password is generated in your cluster and the admin account is created in your b
 | **Alerts + SIEM export** | webhooks (Slack, Teams, Discord, generic), email, syslog (RFC 5424 JSON / CEF), HTTP collector (Splunk HEC, Elastic); alerts for engine down, attack spikes, auto-bans, under-attack, lockouts, admin changes, certificate expiry; every blocked request can be forwarded to your SIEM; secrets never shown again |
 | **OWASP rule updates** | new releases detected and staged automatically, tried in **detect-only canary** sites, then promoted with one click, with rollback; nothing goes live without approval |
 | **OpenAPI validation** | upload your OpenAPI 3 document: unknown paths / methods / parameters / JSON fields, missing required fields, wrong types, enums, ranges and lengths are refused (or logged in detect mode) |
+| **High availability** | 2+ replicas, shared sessions, changes applied on every replica (the confirmation says "applied on 3/3 replicas"), one leader for once-only jobs with automatic failover, encrypted file sharing through the database, rolling updates without dropped requests, **Cluster** page ([`docs/INSTALL.md`](docs/INSTALL.md#high-availability)) |
+| **Fast reloads** | one shared OWASP rule set instead of one per site: 80 sites apply in about 6 seconds; `nginx -t` takes about 0.2 s |
 | **PostgreSQL** | configuration, attack log, sessions and audit trail live in PostgreSQL (in-cluster, hardened) or in your managed PostgreSQL |
 | **Users and roles** | several administrators and read-only **viewers**; forced password change for new users; reset 2FA / revoke sessions |
 | **Rate limiting, IP control** | per-IP rate limit, per-site allow/deny lists, manual bans, **auto-ban** (like fail2ban), method allow-list |
 | **Hardening** | unknown hosts get no reply, no server version, strict timeouts/header limits, real client IP only from trusted proxies, security headers |
 | **Cloud safety** | upstream SSRF protection (no loopback / cloud-metadata targets), optional allowed-suffix list for upstreams |
 | **Admin security** | HTTPS only, **TOTP two-factor login** + recovery codes, lockouts, revocable sessions with idle timeout, CSRF, strict CSP, panel IP allow-list, audit trail with IPs |
-| **Visibility** | dashboard, searchable attack log with OWASP rule ids, Prometheus `/metrics` (bearer token) |
+| **Visibility** | dashboard, searchable attack log with OWASP rule ids, Prometheus `/metrics` (bearer token), and **Grafana-style Dashboards** built into the panel (time ranges, charts, top sites / rules / addresses, replicas) |
 | **Safe operations** | every change is tested (`nginx -t`) and confirmed live before it counts; automatic rollback; config export/import (re-validated, no secrets) |
 
 ## Quick start
@@ -75,13 +81,13 @@ Full instructions with explanations: [`docs/INSTALL.md`](docs/INSTALL.md). The s
 sh scripts/create-db-secret.sh            # Windows: .\scripts\create-db-secret.ps1
 
 # 1. build the image and load it into kind (for a real cluster push it to your registry, see docs/CLOUD.md)
-docker build -t shieldwaf:2.2 .
+docker build -t shieldwaf:2.3 .
 docker build -t shieldwaf-db:16 db
-kind load docker-image shieldwaf:2.2 shieldwaf-db:16 --name mycluster
+kind load docker-image shieldwaf:2.3 shieldwaf-db:16 --name mycluster
 
 # 2. deploy
 kubectl apply -f k8s/shieldwaf.yaml
-kubectl get pods -n shieldwaf                  # 2/2 Running
+kubectl get pods -n shieldwaf                  # two shieldwaf-... pods at 2/2 and shieldwaf-db-0 at 1/1
 ```
 
 ### First start: create the admin account
@@ -107,7 +113,9 @@ For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud u
 
 | Screen | Use |
 |---|---|
+| **Dashboards** | **Grafana-style dashboards**: time range (1 h, 6 h, 24 h, 7 d) and auto-refresh, stat tiles with sparklines, requests by status, attacks caught, response time, busiest sites, most triggered OWASP rules, top blocked addresses, replicas |
 | **Dashboard** | requests, blocks, rate limits, 5xx, hourly chart, top rules and IPs, warnings (2FA off, certificate expiring) |
+| **Cluster** | the replicas, which one is leader, whether each has applied the newest configuration, and how long the last reload took |
 | **Sites** | add/edit/delete; **TLS, anti-bot, login gate, methods, rate limit, WAF tuning**; **Maintenance ON/OFF** per site or for all |
 | **Pages** | edit the maintenance and service-down pages with live preview |
 | **Attack log** | filter by site, text, blocked / detected; OWASP rule id and score |
@@ -140,26 +148,38 @@ For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud u
  client --Host: app.example.com--> [engine: nginx + ModSecurity + OWASP CRS (+ TLS, challenge)] --> your application
                                           ^ reload, confirmed by a handshake file
                                    [panel: renders nginx + rule files into /data/rendered/gen-N, tests them, swaps "current"]
-                                          | tails access.log / audit.json into SQLite -> dashboard, attack log, auto-ban
+                                          | tails access.log / audit.json into PostgreSQL -> dashboard, attack log, auto-ban
 ```
+With two or more replicas every replica runs this whole picture by itself and they all read the same PostgreSQL:
+
+```
+ clients -> Service -> [replica 1: engine + panel] --\
+                       [replica 2: engine + panel] ---+--> PostgreSQL (configuration, sessions, logs, encrypted shared files)
+                       [replica 3: engine + panel] --/
+```
+A change saved on any replica is applied by all of them within about a second. Certificates, keys and downloaded rule sets travel through the
+database **encrypted** with a key that exists only in a cluster secret. One replica at a time is the leader and runs the jobs that must happen once.
 The two containers share only the `/data` volume: the panel writes a new generation and a `reload.request`; the engine tests and
 reloads nginx, waits until the new generation answers, and reports in `reload.status`. If it fails the panel restores the previous generation.
 
 ## Test results (kind, two demo applications as upstreams)
 The suite is in [`tests/`](tests/README.md) and you can run it yourself (`bash tests/run.sh`, needs a test cluster, 15-25 minutes).
-An automated suite of **185 checks** (all passing on the final build, on a real cluster with a real PostgreSQL) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
+An automated suite of **192 checks** (all passing on the final build, run on **two replicas** of a real cluster with a real PostgreSQL) plus **60 high-availability checks** (three replicas) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
 recovery codes and replay refusal, session revocation after logout and after a password change, CSP/HSTS/cookie flags, metrics token,
 panel allow-list lock-out protection, SSRF refusal (loopback, metadata address and names, allowed-suffix list), import validation,
 13 attack types blocked, unknown-host drop, header-size and method limits, spoofed `X-Forwarded-For`, TLS (1.1 refused, 1.3 works,
 unknown-host handshake refused, HSTS, redirect), certificate upload (mismatched key refused, key never shown), login gate, anti-bot
 challenge (correct work, wrong work, forged seed, forged cookie, other browser, scope pages/all, exclusions), maintenance, service-down
-page, rate limiting, auto-ban, backup contents and audit trail, the positive security model, live reputation feeds, country rules (real address blocks), under-attack mode and its automatic escalation under a real flood, and the admin / viewer roles, alert delivery through every channel type to a test receiver (webhook, syslog UDP/TCP, CEF, HTTP collector with a secret header, SMTP), SIEM forwarding of a blocked attack, OpenAPI enforcement (missing / unknown / over-long fields, undocumented methods and paths), the complete OWASP rule-set cycle with a **real GitHub download** (check, stage, canary in detect-only, promote, rollback), and persistence in PostgreSQL across a panel restart. Static analysis (Bandit), manifest and image scans (Trivy: 0 high/critical) and an OWASP ZAP baseline (0 failures) are in [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md). See [`SECURITY.md`](SECURITY.md) for the design and the limits.
+page, rate limiting, auto-ban, backup contents and audit trail, the positive security model, live reputation feeds, country rules (real address blocks), under-attack mode and its automatic escalation under a real flood, and the admin / viewer roles, alert delivery through every channel type to a test receiver (webhook, syslog UDP/TCP, CEF, HTTP collector with a secret header, SMTP), SIEM forwarding of a blocked attack, OpenAPI enforcement (missing / unknown / over-long fields, undocumented methods and paths), the complete OWASP rule-set cycle with a **real GitHub download** (check, stage, canary in detect-only, promote, rollback), and persistence in PostgreSQL across a panel restart. The high-availability suite checks: shared sessions, keys and certificates, a change on one replica served by all, twelve administrators on three replicas at once with nothing lost, 80 sites applied in seconds with correct per-site behaviour (detect-only, thresholds, paranoia levels, exclusions, own rules, wildcards), killing the leader (new leader in about 10 s, no failed requests), a replacement replica catching up by itself, a **database outage** (the firewall keeps serving), and a **rolling restart under load with zero failed requests**. Static analysis (Bandit), manifest and image scans (Trivy: 0 high/critical) and an OWASP ZAP baseline (0 failures) are in [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md). See [`SECURITY.md`](SECURITY.md) for the design and the limits.
 
 ## Limits (honest list)
 - **No independent audit.** A documented self-review is in [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md); get a third-party test before relying on it for high-value systems.
 - **Detection is partly pattern-based** (OWASP rules). The positive model, reputation feeds, country rules, challenge and flood defence add protection that does not depend on patterns, but keep your applications patched.
 - **No volumetric DDoS protection** (impossible inside a cluster); application-layer floods are handled; see [`docs/DDOS.md`](docs/DDOS.md) for what to put in front.
-- Single panel/engine replica (no high availability; the database is PostgreSQL, ready for a managed, replicated service); reload time grows with the number of sites (about half a second each); certificates are renewed by cert-manager, not by this product.
+- **The database is the one single point of failure.** The replicas keep serving traffic when it is down (tested), but you cannot change the configuration until it is back, and a replica that is *newly started* during an outage cannot start. For real redundancy use a managed, replicated PostgreSQL (see `docs/CLOUD.md`).
+- Rate limits and the per-address connection cap are counted **per replica** (each replica sees only its own share of the traffic), so with N replicas an address can use up to N times the limit. Plan the numbers accordingly.
+- Reload time is now almost independent of the number of sites, except while an OWASP rule-set update is being canary-tested (two rule-set versions cannot be shared): then each site loads its own copy again and reloads are slower; test canaries on few sites.
+- Certificates are renewed by cert-manager, not by this product.
 Details in `SECURITY.md`.
 
 ## Comparison with SafeLine and BunkerWeb
@@ -174,9 +194,10 @@ report security problems privately as described in [`SECURITY.md`](SECURITY.md).
 | Path | Purpose |
 |---|---|
 | `Dockerfile`, `engine-entrypoint.sh`, `panel-entrypoint.sh` | the single image: engine and panel |
-| `tests/` | the 185-check regression suite and its runner |
+| `panel/cluster.py`, `panel/sharedfs.py` | high availability: leader election, change propagation, encrypted shared files |
+| `tests/` | the 192-check regression suite, the 60-check high-availability suite and their runner |
 | `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
-| `k8s/shieldwaf.yaml` | hardened namespace, volume, pod, PostgreSQL StatefulSet, services, network policies |
+| `k8s/shieldwaf.yaml` | hardened namespace, replicated Deployment, disruption budget, PostgreSQL StatefulSet, services, network policies |
 | `db/Dockerfile` | the PostgreSQL image (official, pinned, OS fixes, unused `gosu` removed) |
 | `scripts/create-db-secret.*` | creates the database secret in the cluster (random password) |
 | `SECURITY.md` | security design, limits, operator duties |

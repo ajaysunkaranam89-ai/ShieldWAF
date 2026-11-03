@@ -1,4 +1,6 @@
-"""Background workers: tail nginx/ModSecurity logs into SQLite, auto-ban noisy IPs, prune old data."""
+"""Background workers: tail this replica's nginx/ModSecurity logs into the database, auto-ban noisy IPs, prune old data, refresh feeds.
+With several replicas every replica ingests its own logs and watches its own engine; the jobs that must happen once (everything else)
+run only on the leader replica (see cluster.py)."""
 import ipaddress
 import json
 import os
@@ -7,6 +9,7 @@ import time
 from datetime import datetime
 
 import alerts
+import cluster
 import crsupdate
 import engine
 import feeds
@@ -23,6 +26,7 @@ def _read_new(path, key, limit=20000):
         size = os.path.getsize(path)
     except OSError:
         return []
+    key = f"{key}:{store.NODE}"        # every replica has its own log files and therefore its own read position
     off = int(store.meta_get(key, 0))
     if size < off:
         off = 0
@@ -260,14 +264,14 @@ def health_tick():
     now = time.time()
     if ok:
         if not _mon["engine_ok"]:
-            alerts.notify("engine_recovered", "Firewall engine is back", f"It was down for {int(now - _mon['down_since'])} s.", force=True)
+            alerts.notify("engine_recovered", f"Firewall engine is back ({store.NODE})", f"It was down for {int(now - _mon['down_since'])} s.", force=True)
         _mon.update(engine_ok=True, down_since=0.0)
     else:
         if _mon["down_since"] == 0.0:
             _mon["down_since"] = now
         if _mon["engine_ok"] and now - _mon["down_since"] >= 30:
             _mon["engine_ok"] = False
-            alerts.notify("engine_down", "Firewall engine is not answering", "No health reply for 30 seconds. Traffic to protected sites is failing.", force=True)
+            alerts.notify("engine_down", f"Firewall engine is not answering ({store.NODE})", "No health reply for 30 seconds. Traffic to protected sites is failing on this replica.", force=True)
 
 
 def spike_tick():
@@ -374,5 +378,8 @@ def start(applier):
     global _applier
     _applier = applier
     alerts.start()
-    for fn, every in ((ingest_access, 2), (ingest_audit, 2), (autoban_tick, 15), (prune, 3600), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (health_tick, 5), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900)):
+    # every replica: its own logs, its own engine, local clean-up. Leader only: everything that must happen once for the whole cluster.
+    local = ((ingest_access, 2), (ingest_audit, 2), (prune, 3600), (health_tick, 5))
+    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900))
+    for fn, every in local + tuple((cluster.leader_only(f), e) for f, e in once):
         threading.Thread(target=_loop, args=(fn, every), daemon=True, name=fn.__name__).start()

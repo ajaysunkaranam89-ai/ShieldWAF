@@ -41,5 +41,6 @@ CDN/load-balancer ranges under **Settings, Real client IP**, so the real client 
 5. When it is over, press **Under attack OFF** (automatic episodes end by themselves) and review the audit trail.
 
 ## Capacity planning
-The engine uses about 60 MB per worker plus the rule set per site. For heavy traffic raise the engine memory limit, and note that one
-replica is a single point of failure (see SECURITY.md); consider a second independent instance behind DNS or a load balancer with health checks.
+The engine uses about 60 MB per worker plus one copy of the rule set. For heavy traffic raise the engine memory limit and add replicas (`kubectl scale`): traffic is spread over them
+by the Service or your load balancer. Note that rate limits and the connection cap are counted per replica, so with N replicas an address can use up to N times the limit; lower the numbers accordingly.
+Flood escalation (under-attack mode) is decided once, by the leader, from the requests of all replicas, and then applied on every replica.

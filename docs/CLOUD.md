@@ -5,17 +5,19 @@ Read [`../SECURITY.md`](../SECURITY.md) first. This page only covers the cloud-s
 ## 1. Image
 Build once, push to **your private registry**, and reference it by digest.
 ```bash
-docker build -t <registry>/a-shield-waf:2.2 .
-docker push <registry>/a-shield-waf:2.2
+docker build -t <registry>/a-shield-waf:2.3 .
+docker push <registry>/a-shield-waf:2.3
 docker build -t <registry>/a-shield-waf-db:16 db && docker push <registry>/a-shield-waf-db:16     # only if you use the bundled PostgreSQL
 # then set image: <registry>/a-shield-waf@sha256:<digest> in k8s/shieldwaf.yaml (both containers) and imagePullSecrets if needed
 ```
-Scan it before every release: `trivy image --severity HIGH,CRITICAL --ignore-unfixed <registry>/a-shield-waf:2.2`.
+Scan it before every release: `trivy image --severity HIGH,CRITICAL --ignore-unfixed <registry>/a-shield-waf:2.3`.
 
 ## 2. Storage and database
 The configuration, attack log, sessions and audit trail are in **PostgreSQL**. Either keep the bundled hardened StatefulSet (create its secret with `scripts/create-db-secret.sh`) or use a **managed PostgreSQL** (Amazon RDS, Azure Database for PostgreSQL, Cloud SQL): delete the `shieldwaf-db` StatefulSet / Service / policy from the manifest and create the secret yourself with `SHIELD_DB_URL=postgresql://user:password@host:5432/dbname?sslmode=require` (key `SHIELD_DB_URL`). Enable the provider's backups and encryption.
-The PVC (`shieldwaf-data`) still holds the rendered configuration, logs, certificates, downloaded rule sets and alert secrets. Use an encrypted storage class
-(EBS gp3 with KMS, Azure Disk with CMK, GCE PD with CMEK) and snapshot it on a schedule.
+The replicas themselves are stateless: each one has a private scratch volume (`emptyDir`) for its rendered configuration and logs and rebuilds everything else from the
+database. Certificates, private keys, alert secrets, threat-feed data and downloaded rule sets are shared between replicas **through the database, encrypted** with the key in the secret
+key `SHIELD_DATA_KEY` (create it with `scripts/create-db-secret.*`, or put a random 32-byte url-safe base64 value there yourself). Use an encrypted storage class for the database volume
+(EBS gp3 with KMS, Azure Disk with CMK, GCE PD with CMEK), snapshot it on a schedule, and back up the secret separately. A managed PostgreSQL must allow about 20 connections per replica.
 
 ## 3. Exposing the protected traffic (only 80/443)
 Create a **separate** Service of type LoadBalancer that exposes the proxy ports only, never the panel:
@@ -77,5 +79,11 @@ Scrape `https://shieldwaf-panel.shieldwaf.svc:9000/metrics` with the bearer toke
 `shieldwaf_engine_up == 0`, a sudden rise of `shieldwaf_requests_total{status="403"}`, and certificate expiry warnings on the dashboard.
 
 ## 10. Availability and limits
-One replica, one volume: plan maintenance windows or run a second, independent instance behind DNS failover. Memory grows with the
-number of sites because the rule set is loaded per site; raise the panel limit (768 Mi) and the engine limit (1 Gi) accordingly.
+**Replicas:** the manifest runs two (set `replicas:` to 3 for the most common production layout: one replica per availability zone). The Deployment spreads them over nodes
+(`topologySpreadConstraints`; with a zone label use `topology.kubernetes.io/zone` instead of the hostname key for zone spreading), a PodDisruptionBudget keeps one up during node
+drains, and rolling updates never remove a replica before its replacement is ready. Point your load balancer's health check at the proxy Service; a replica that is not ready is taken out of rotation.
+**Database:** the replicas keep serving when it is down, but it is the single point of failure for changes and for starting new replicas. Use a managed, replicated PostgreSQL
+(Multi-AZ RDS, Azure zone-redundant, Cloud SQL HA) rather than the bundled single StatefulSet.
+**Per-replica counters:** rate limits and the connection cap are applied by each replica to its own share of the traffic; with N replicas an address can use up to N times the configured rate.
+**Memory:** the OWASP rules are loaded once and shared by all sites, so memory barely grows with the number of sites (about 250 MB per replica for 80 sites).
+Only while a canary rule set is tested does each site load its own copy again.

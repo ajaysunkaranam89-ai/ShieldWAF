@@ -19,6 +19,7 @@ import urllib.request
 from email.message import EmailMessage
 from urllib.parse import urlparse
 
+import sharedfs
 import store
 
 SECRET_DIR = os.path.join(store.DATA, "secrets")
@@ -62,6 +63,7 @@ def save_secret(cid, data):
     with os.fdopen(fd, "w") as f:
         json.dump(data, f)
     os.replace(tmp, _secret_path(cid))
+    sharedfs.publish(f"secrets/{cid}.json")
 
 
 def delete_secret(cid):
@@ -69,6 +71,7 @@ def delete_secret(cid):
         os.remove(_secret_path(cid))
     except OSError:
         pass
+    sharedfs.forget(f"secrets/{cid}.json")
 
 
 # ---------------------------------------------------------------------------------------------- target safety
@@ -105,7 +108,7 @@ def format_syslog(ch, ev):
     sev = {"info": 6, "warning": 4, "critical": 2}.get(ev["severity"], 6)
     pri = 8 * 16 + sev                        # facility local0
     if ch.get("format") == "cef":
-        body = (f"CEF:0|AShieldWAF|WAF|2.2|{_cef_escape(ev['event'])}|{_cef_escape(ev['title'])}|{ {'info': 3, 'warning': 6, 'critical': 9}[ev['severity']] }|"
+        body = (f"CEF:0|AShieldWAF|WAF|2.3|{_cef_escape(ev['event'])}|{_cef_escape(ev['title'])}|{ {'info': 3, 'warning': 6, 'critical': 9}[ev['severity']] }|"
                 f"msg={_cef_escape(ev['detail'])} rt={int(ev['ts'] * 1000)}")
     else:
         body = json.dumps(ev, separators=(",", ":"))
@@ -127,7 +130,7 @@ def format_webhook(ch, ev):
 # ---------------------------------------------------------------------------------------------- delivery
 def _post_json(url, payload, headers=None, timeout=15):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", "User-Agent": "A-Shield-WAF/2.2", **(headers or {})})
+                                 headers={"Content-Type": "application/json", "User-Agent": "A-Shield-WAF/2.3", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:      # nosec B310 - scheme and target were validated when the channel was saved
         r.read(2048)
         if r.status >= 300:

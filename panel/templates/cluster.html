@@ -1,0 +1,40 @@
+{% extends "base.html" %}{% block title %}Cluster - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Cluster</h1>
+<p class="sub">High availability: every replica runs its own firewall engine and all of them share one database.
+  This replica is <b class="mono">{{ me }}</b>.</p>
+{% for w in warn %}<div class="flash err">{{ w }}</div>{% endfor %}
+<div class="grid g4">
+  <div class="card stat s1"><div class="n">{{ alive }}</div><div class="l">Replicas online</div></div>
+  <div class="card stat s2"><div class="n">{{ in_sync }}</div><div class="l">In sync with the newest configuration</div></div>
+  <div class="card stat s3"><div class="n">{{ stats.get('total_ms', 0) }} ms</div><div class="l">Last configuration apply (this replica)</div></div>
+  <div class="card stat s4"><div class="n">{{ stats.get('sites', 0) }}</div><div class="l">Sites served</div></div>
+</div>
+<div class="card" style="margin-top:14px"><b>Replicas</b>
+  <table><tr><th>Replica</th><th>Role</th><th>Status</th><th>Engine</th><th>Config version</th><th>Version</th><th>Last seen</th><th>Notes</th></tr>
+  {% for n in nodes %}<tr>
+    <td class="mono">{{ n.name }}{% if n.me %} <span class="pill p-info">this one</span>{% endif %}</td>
+    <td>{% if n.info.get('leader') and n.alive %}<span class="pill p-ok">leader</span>{% else %}<span class="hint">follower</span>{% endif %}</td>
+    <td>{% if not n.alive %}<span class="pill p-err">offline</span>{% elif n.ok %}<span class="pill p-ok">in sync</span>{% else %}<span class="pill p-warn">cannot apply</span>{% endif %}</td>
+    <td>{% if n.engine_ok %}<span class="pill p-ok">running</span>{% else %}<span class="pill p-err">down</span>{% endif %}</td>
+    <td class="mono">{{ n.applied_cfg }}</td><td>{{ n.version }}</td><td>{{ n.ts|ts }}</td><td class="hint">{{ n.msg }}</td></tr>
+  {% else %}<tr><td colspan="8" class="hint">No replica has reported yet.</td></tr>{% endfor %}</table>
+  <p class="hint">A replica that is offline for more than 12 seconds is shown as offline; its row disappears after a day. The <b>leader</b> is the one replica
+  that runs the jobs that must happen only once (threat-feed and country downloads, rule-set checks, auto-ban, flood escalation, spike alerts).
+  If it stops, another replica takes over within a few seconds.</p></div>
+<div class="grid g2" style="margin-top:14px">
+  <div class="card"><b>How configuration changes reach all replicas</b>
+    <p class="hint">Saving a change applies it on the replica you are connected to, stores it in the database, and every other replica applies it by itself within about a
+    second. The confirmation message tells you how many replicas have applied it. Certificates, keys, feed and rule-set files are shared
+    through the database, <b>encrypted</b>:
+    {% if ha %}<span class="pill p-ok">shared files on</span>{% else %}<span class="pill p-warn">shared files off (single replica only)</span>{% endif %}</p></div>
+  <div class="card"><b>Reload speed (this replica)</b>
+    {% if stats %}<table><tr><td>Rule layout</td><td>{% if stats.get('layout') == 'shared' %}<span class="pill p-ok">one shared OWASP rule set</span>{% else %}<span class="pill p-warn">one rule set per site</span>{% endif %}</td></tr>
+    <tr><td>Sites / with own rules</td><td>{{ stats.get('sites', 0) }} / {{ stats.get('dedicated', 0) }}</td></tr>
+    <tr><td>Write files</td><td>{{ stats.get('write_ms', 0) }} ms</td></tr><tr><td>Test (nginx -t)</td><td>{{ stats.get('test_ms', 0) }} ms</td></tr>
+    <tr><td>Reload and confirm</td><td>{{ stats.get('reload_ms', 0) }} ms</td></tr></table>
+    <p class="hint">The OWASP rules are loaded once and shared by all sites, so adding sites barely adds reload time. The per-site layout is used only while a
+    canary rule set is being tested (two rule-set versions cannot be shared).</p>
+    {% else %}<p class="hint">No configuration has been applied by this replica yet.</p>{% endif %}</div>
+</div>
+{% endblock %}

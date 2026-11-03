@@ -14,6 +14,7 @@ import tarfile
 import time
 import urllib.request
 
+import sharedfs
 import store
 
 CRS_ROOT = os.path.join(store.DATA, "crs")
@@ -43,7 +44,7 @@ def _open(url, accept="*/*"):
     if not url.startswith("https://") or host not in ALLOWED_HOSTS:
         raise UpdateError("download host not allowed")
     opener = urllib.request.build_opener(_SafeRedirect)
-    return opener.open(urllib.request.Request(url, headers={"User-Agent": "A-Shield-WAF/2.2", "Accept": accept}), timeout=60)  # nosec B310 - https + host allow-list
+    return opener.open(urllib.request.Request(url, headers={"User-Agent": "A-Shield-WAF/2.3", "Accept": accept}), timeout=60)  # nosec B310 - https + host allow-list
 
 
 def version_of(rules_root):
@@ -117,6 +118,7 @@ def stage(tag):
     final = os.path.join(CRS_ROOT, tag)
     shutil.rmtree(final, ignore_errors=True)
     os.replace(tmp, final)
+    sharedfs.publish(f"crs/{tag}")                  # the other replicas fetch the staged rule set from the shared store
     return ver, sha
 
 
@@ -127,3 +129,5 @@ def prune(keep):
     for d in os.listdir(CRS_ROOT):
         if d not in keep:
             shutil.rmtree(os.path.join(CRS_ROOT, d), ignore_errors=True)
+            if sharedfs.valid(f"crs/{d}"):
+                sharedfs.forget(f"crs/{d}")

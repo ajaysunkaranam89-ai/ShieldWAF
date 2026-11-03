@@ -1,12 +1,19 @@
-# Security self-review of A Shield WAF 2.2
+# Security self-review of A Shield WAF 2.3
 
 **This is a self-review, not an independent audit.** It was performed by the author with open-source tools and automated tests, and it
 documents what was checked, what was found and what was done about it. It lowers the chance of mistakes; it cannot replace an
 independent penetration test and code review by people who did not write the code. Commission one before using the product for
-regulated or high-value systems. Date of this review: 2026-11-03, version 2.2.
+regulated or high-value systems. Date of this review: 2026-11-03, version 2.3.
+
+**What was re-run for 2.3 (high availability, shared rule set, Dashboards):** Bandit, Trivy (image and manifests) and gitleaks, plus the automated tests
+(sections 1, 4 and 6 below are updated). The OWASP ZAP baseline (section 5) was run on 2.2 and was **not** repeated for 2.3; the panel gained two read-only pages (Cluster, Dashboards)
+that follow the same rules as the others (login, escaped output, strict CSP), but they were not scanned separately.
+New things to review in 2.3: the encrypted file sharing through the database (`panel/sharedfs.py`: authenticated encryption, fixed list of path shapes, checked archive extraction),
+the cluster-wide lock and leader election (`panel/store.py`, `panel/cluster.py`), and the per-site settings dispatch inside the shared rule set (`panel/engine.py`: wildcard and exact host names,
+fail-closed default for a request that matches no site, tested with upper-case and trailing-dot host names).
 
 ## 1. Static analysis (Bandit, Python code, about 3,500 lines)
-Result on 2.2: **0 high, 1 medium, 14 low** findings. Every finding was reviewed (the 2.1 round fixed 5 real low findings: asserts used for validation, bare binary paths).
+Result on 2.3: **0 high, 0 medium, 20 low** findings (2.2: 0 high, 1 medium, 14 low); the low ones are empty-string defaults flagged as passwords, subprocess calls with fixed arguments, and deliberate `except: pass` around clean-up. Every finding was reviewed (the 2.1 round fixed 5 real low findings: asserts used for validation, bare binary paths).
 
 | Finding | Count | Verdict and action |
 |---|---|---|
@@ -29,7 +36,7 @@ packages installed with `apk add` are not version-pinned because Alpine removes 
 instead the **base image is pinned by digest** and the image is re-scanned.
 
 ## 4. Image vulnerability scan (Trivy, OS and language packages)
-- Panel / engine image `shieldwaf:2.2`: **0 high or critical** vulnerabilities (with fixes available) at the time of the scan.
+- Panel / engine image `shieldwaf:2.3`: **0 high or critical** vulnerabilities (with fixes available) at the time of the scan.
 - PostgreSQL: the official image's operating-system packages were clean, but it bundles `gosu`, a helper built with an outdated Go runtime (26 high / critical findings). It is never executed here (the pod is non-root), so it was **removed** in `db/Dockerfile`, and the derived image `shieldwaf-db:16` scans **clean**.
 Re-run before every release (the CI workflow does it weekly).
 
@@ -48,8 +55,8 @@ Panel warnings and actions:
 Warnings on the protected application are about the application's own responses (for example no Content-Security-Policy header from the sample app).
 A WAF should not invent application-specific policies; the WAF adds the generic ones (X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy, HSTS).
 
-## 6. Automated attack and abuse tests (185 checks, run on a live cluster with PostgreSQL)
-All pass. They include attacks against the product itself, not only against the applications behind it:
+## 6. Automated attack and abuse tests (192 checks + HA checks, run on a live cluster with PostgreSQL)
+All pass. The functional suite runs on **two replicas**; a second suite adds the high-availability checks on three replicas (shared sessions, keys and certificates, concurrent administrators, 80 sites, leader failure, database outage, rolling restart under load). They include attacks against the product itself, not only against the applications behind it:
 weak and wrong passwords, setup-code abuse, login lockout, two-factor replay and recovery-code reuse, session revocation after logout and after
 password change, stolen-cookie reuse, missing CSRF token, CSP / HSTS / cookie flags, metrics without token, panel allow-list self-lockout,
 SSRF to loopback / cloud-metadata addresses and names, feed URLs that resolve to private addresses, malicious configuration import,
@@ -72,5 +79,5 @@ reputation-listed and country-blocked addresses, request floods and automatic es
 | Volumetric DDoS | none in the product (impossible there) | must be handled upstream, see `DDOS.md` |
 
 ## 8. Known limitations that remain
-Single replica; no independent audit; pattern-based core rule set; no automatic certificate renewal (cert-manager recommended);
-`style-src 'unsafe-inline'` on the admin panel; reload time grows with the number of sites.
+No independent audit; the database is the single point of failure; pattern-based core rule set; no automatic certificate renewal (cert-manager recommended);
+`style-src 'unsafe-inline'` on the admin panel; rate limits are counted per replica.

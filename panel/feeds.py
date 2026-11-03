@@ -14,6 +14,7 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
+import sharedfs
 import store
 
 FEED_DIR = os.path.join(store.DATA, "feeds")
@@ -111,6 +112,7 @@ def refresh_feeds(cfg, never_nets):
     with open(tmp, "w") as f:
         f.write("".join(f"  {n} 1;\n" for n in merged))
     os.replace(tmp, os.path.join(FEED_DIR, "feed.geo"))
+    sharedfs.publish("feeds/feed.geo")          # the other replicas pick it up
     return True, len(merged), "; ".join(errors)[:300]
 
 
@@ -185,6 +187,7 @@ def _build_geo():
         os.replace(tmp, os.path.join(GEO_DIR, f"{cc}.cidr"))
     with open(os.path.join(GEO_DIR, "meta.txt"), "w") as f:
         f.write(f"updated={int(time.time())}\ncountries={len(per_cc)}\nblocks={sum(len(v) for v in per_cc.values())}\n")
+    sharedfs.publish("geo")                       # the other replicas pick it up
 
 
 def refresh_geo_async(on_done=None):

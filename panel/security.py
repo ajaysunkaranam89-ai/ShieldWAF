@@ -11,6 +11,7 @@ import subprocess
 import time
 from urllib.parse import quote, urlparse
 
+import sharedfs
 import store
 
 # ----------------------------------------------------------------------------------------------- TOTP (RFC 6238)
@@ -154,6 +155,7 @@ def install_pair(site_id, cert_pem, key_pem):
             return "The private key does not match the certificate."
         os.replace(tmp_c, os.path.join(d, "fullchain.pem"))
         os.replace(tmp_k, os.path.join(d, "privkey.pem"))
+        sharedfs.publish(f"certs/{site_id}")        # every replica needs the certificate
         return None
     finally:
         for t in (tmp_c, tmp_k):
@@ -172,6 +174,8 @@ def make_selfsigned(site_id, host, days=365):
     r = _run(["/usr/bin/openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", str(days),
               "-subj", f"/CN={host.lstrip('*.')}", "-addext", f"subjectAltName={san}", "-keyout", key, "-out", crt])
     os.chmod(key, 0o600)
+    if r.returncode == 0:
+        sharedfs.publish(f"certs/{site_id}")
     return None if r.returncode == 0 else "openssl failed: " + r.stderr[-200:]
 
 

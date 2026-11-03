@@ -41,7 +41,9 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 | Backup / restore of config | export/import JSON in GUI (validated, no secrets) | (?) | backup plugin (S3 is Pro) |
 | Safe apply (test, confirm live, rollback) | **yes** | (?) | reload errors possible |
 | Runs on Kubernetes | **yes, native, hardened (restricted PSS, read-only FS, NetworkPolicy)** | **no official support: Docker Compose only, failed here** | yes (Helm chart, 6 pods) |
-| Memory used here | **about 230 MB** (4 sites) | about 1 GB (7 containers) | about 1 GB (6 pods) |
+| High availability | **yes: 2+ replicas on one shared database, tested (replica kill, database outage, rolling restart)** | (?) not tested here | multi-instance with an external database (not tested here) |
+| Reload with many sites | **shared rule set: 80 sites in about 6 s** | (?) | (?) |
+| Memory used here | **about 250 MB per replica** | about 1 GB (7 containers) | about 1 GB (6 pods) |
 | Image scan | Trivy: 0 high/critical (unfixed ignored) | (?) | (?) |
 | Maturity / support / audits | new, one author, **not independently audited, you own it** | mature product, vendor and community | mature product, vendor and community |
 
@@ -49,8 +51,8 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 - **Where SafeLine is better:** the detection engine (semantic analysis is harder to evade and gives fewer false positives than regex rules), a more mature anti-bot system, and a more polished console. Use it where you can run Docker Compose.
 - **Where BunkerWeb is better:** the largest free plugin list (automatic certificates, CrowdSec, country blocking) and years of production use.
 - **Where A Shield WAF is better for you:** it runs natively and hardened on your Kubernetes cluster with very little memory, and it gives you for free the things the other two lock or lack: **GUI maintenance switch, editable visitor pages, automatic service-down page, safe apply with rollback, rule exclusions in the GUI, two-factor admin login, audit trail, SSRF protection**.
-- **Honest gaps in A Shield WAF today:** no automatic certificate renewal (use cert-manager), no shared community threat signals (CrowdSec-style), single replica, **no independent audit**, detection that is only partly pattern-free (the OWASP rules are pattern-based; the positive model, feeds, country rules, challenge and flood defence help), and no volumetric DDoS protection.
+- **Honest gaps in A Shield WAF today:** no automatic certificate renewal (use cert-manager), no shared community threat signals (CrowdSec-style), the database as the one single point of failure, per-replica rate-limit counters, **no independent audit**, detection that is only partly pattern-free (the OWASP rules are pattern-based; the positive model, feeds, country rules, challenge and flood defence help), and no volumetric DDoS protection.
 
 ## Feature score (the author's own 20-item checklist of practical WAF features)
-Verified here: **A Shield WAF about 19 / 20 (95%)**, BunkerWeb free about 15 / 20, SafeLine not measurable on this cluster.
-The missing point is a built-in Grafana-style dashboard bundle. This is a self-assessment, not a benchmark, and it says nothing about maturity or independent assurance.
+Verified here: **A Shield WAF 20 / 20 (100%)**, BunkerWeb free about 15 / 20, SafeLine not measurable on this cluster.
+The last open point of the earlier 19 / 20 (a built-in Grafana-style dashboard) is now the **Dashboards** page of the panel. This is a self-assessment, not a benchmark, and it says nothing about maturity or independent assurance.

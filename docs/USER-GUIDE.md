@@ -80,7 +80,24 @@ Updates are never switched on without an administrator.
 - **Security (2FA):** scan or type the key into any authenticator app, confirm a code, **save the 8 recovery codes** (shown once).
 - **Settings, Admin panel access:** restrict which addresses may open the panel at all.
 
+## Dashboards (Grafana-style)
+Open **Dashboards** for the charts you know from Grafana, built into the panel (no extra software, no JavaScript library; read-only viewers can open it too).
+Choose the **time range** (1 h, 6 h, 24 h, 7 d) and the **refresh** interval (off, 10 s, 30 s, 60 s) at the top right.
+- **Tiles:** requests, blocked by the WAF (403), rate limited (429), server errors (5xx), blocked share, average response time, each with a small trend line.
+- **Requests by status:** stacked columns; green is normal traffic, red blocked, orange rate-limited, purple server errors. Hover a column for the exact numbers.
+- **Attacks caught by the OWASP rules:** blocked versus *detected only* (sites in detect-only mode).
+- **Busiest sites, most triggered OWASP rules, top blocked addresses, HTTP status codes:** the bars show the top eight for the chosen period. Many hits of one rule on a normal page usually mean a false positive to tune (Sites, rule exclusions).
+- **Replicas:** the state of every replica (details on the Cluster page).
+The numbers come from the access and attack logs in the database, so all replicas appear together. The longest range is limited by the log retention (Settings, default 7 days).
+
+## Cluster (replicas)
+The **Cluster** page shows every replica of the firewall: whether it is online, whether its engine is running, which configuration version it has applied, and which one is the **leader**
+(the replica that runs the once-only jobs). After every change the green message tells you on how many replicas the change is already live, for example *applied and reloaded; applied on 3/3 replicas*.
+If a replica needs longer, the message names it and the Cluster page shows its progress. The card on the right shows how long the last reload took on the replica you are connected to; with the
+default *one shared OWASP rule set* layout this stays in the range of a second even for many sites. Scale up or down with `kubectl scale deploy/shieldwaf -n shieldwaf --replicas=N`.
+
 ## Monitoring
+The built-in **Dashboards** page shows the same kind of charts you know from Grafana (time range and auto-refresh in the top bar); this section is for external monitoring.
 Prometheus can scrape `https://shieldwaf-panel.shieldwaf.svc:9000/metrics` with the header `Authorization: Bearer <token>` (create the token under **Settings, Metrics token**).
 Useful alerts: `shieldwaf_engine_up == 0`, a jump in `shieldwaf_requests_total{status="403"}`, `shieldwaf_sites_under_attack > 0`.
 

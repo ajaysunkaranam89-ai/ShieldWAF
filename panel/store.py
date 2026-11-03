@@ -1,4 +1,5 @@
-"""Persistent state for ShieldWAF: JSON config (sites, settings, users, bans) + SQLite (events, access hits, audit)."""
+"""Persistent state for ShieldWAF: the configuration (sites, settings, users, bans), events, access hits, audit trail, sessions.
+PostgreSQL in production; every replica of the panel talks to the same database (see cluster.py for high availability)."""
 import json
 import os
 import sqlite3
@@ -8,7 +9,59 @@ import time
 DATA = os.environ.get("SHIELD_DATA", "/data")
 CFG_PATH = os.path.join(DATA, "config.json")
 DB_PATH = os.path.join(DATA, "shield.db")
-_lock = threading.RLock()
+NODE = os.environ.get("SHIELD_NODE") or os.environ.get("HOSTNAME") or "local"     # this replica (the pod name in Kubernetes)
+
+
+class _ClusterLock:
+    """A re-entrant lock that is also cluster-wide: with several replicas, only one administrator action at a time may run
+    read-modify-write on the configuration. Inside a PostgreSQL deployment it is a session advisory lock; the code that already
+    wrote `with store._lock:` is therefore safe across replicas without any other change. Without PostgreSQL it is a plain lock."""
+    KEY = 724001
+    WAIT = 60
+
+    def __init__(self):
+        self._r = threading.RLock()
+        self._depth = 0
+        self._con = None
+
+    def __enter__(self):
+        self._r.acquire()
+        self._depth += 1
+        if self._depth == 1:
+            try:
+                if PG:
+                    con = db()
+                    end = time.time() + self.WAIT
+                    while not con.execute("SELECT pg_try_advisory_lock(?) AS ok", (self.KEY,)).fetchone()["ok"]:
+                        con.commit()
+                        if time.time() > end:
+                            raise RuntimeError("another administrator or replica is changing the configuration (waited 60 s)")
+                        time.sleep(0.05)
+                    con.commit()
+                    self._con = con
+                _cache.update(t=0.0, raw=None)       # inside a critical section always read the newest saved state
+            except BaseException:
+                self._depth -= 1
+                self._r.release()
+                raise
+        return self
+
+    def __exit__(self, *exc):
+        self._depth -= 1
+        try:
+            if self._depth == 0 and self._con is not None:
+                con, self._con = self._con, None
+                try:
+                    con.execute("SELECT pg_advisory_unlock(?)", (self.KEY,))
+                    con.commit()
+                except Exception:  # noqa: BLE001 - a dead connection already released the lock on the server
+                    pass
+        finally:
+            self._r.release()
+
+
+_lock = _ClusterLock()          # the lock administrator actions use around read-modify-write of the configuration
+_mem = threading.RLock()         # protects only the in-process cache
 
 DEFAULT_SETTINGS = {
     "trusted_proxies": "",          # CIDRs whose X-Forwarded-For is trusted (one per line)
@@ -69,8 +122,10 @@ def _default_cfg():
     return {"users": {}, "settings": json.loads(json.dumps(DEFAULT_SETTINGS)), "sites": [], "bans": [], "pages": {"maintenance": "", "down": ""}}
 
 
-def load():
-    with _lock:
+def load(fresh=False):
+    with _mem:
+        if fresh:
+            _cache.update(t=0.0, raw=None)
         cfg = _read_config()
         base = _default_cfg()
         for k, v in base.items():
@@ -124,12 +179,21 @@ def _read_config():
 
 
 def save(cfg):
-    with _lock:
+    """Persist the configuration and bump the configuration version, which tells every replica to apply it."""
+    with _mem:
         raw = json.dumps(cfg)
         con = db()
         con.execute("INSERT INTO config(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (raw,))
+        con.execute("INSERT INTO counters(k,v) VALUES('cfg_ver',1) ON CONFLICT(k) DO UPDATE SET v=counters.v+1")
         con.commit()
         _cache.update(t=time.time(), raw=raw)
+
+
+def state_version():
+    """(configuration version, shared-files version): changes whenever any replica saved something the others must apply."""
+    rows = {r["k"]: int(r["v"]) for r in db().execute("SELECT k,v FROM counters WHERE k IN ('cfg_ver','files_ver')").fetchall()}
+    db().commit()
+    return rows.get("cfg_ver", 0), rows.get("files_ver", 0)
 
 
 # --------------------------------------------------------------------------------------------------- database
@@ -141,6 +205,12 @@ if PG:
     import psycopg2.extras
 
 HOUR = "CAST(FLOOR(ts/3600) AS INTEGER)" if PG else "CAST(ts/3600 AS INTEGER)"
+
+
+def bucket_sql(seconds):
+    """SQL for the time bucket of `ts` (seconds is a code constant, never user input)."""
+    s = int(seconds)
+    return f"CAST(FLOOR(ts/{s}) AS INTEGER)" if PG else f"CAST(ts/{s} AS INTEGER)"
 _local = threading.local()
 
 
@@ -148,6 +218,7 @@ class _Conn:
     """The same tiny API for both databases: execute / executemany / commit, '?' placeholders, rows readable by column name."""
 
     def __init__(self):
+        self._n = 0                        # statements run since the last commit (a dead connection is retried only when this is 0)
         if PG:
             self.raw = psycopg2.connect(DB_URL, connect_timeout=10)
         else:
@@ -163,32 +234,54 @@ class _Conn:
     def _sql(sql):
         return sql.replace("%", "%%").replace("?", "%s") if PG else sql
 
-    def _run(self, fn):
+    def _reconnect(self):
         try:
-            return fn()
-        except Exception:
+            self.raw.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.raw = psycopg2.connect(DB_URL, connect_timeout=10)
+
+    def _run(self, fn, write=True):
+        """Run one database call. If the connection died (database restarted, failover) and nothing uncommitted would be lost,
+        reconnect once and repeat the call, so a database restart costs no failed requests."""
+        first = self._n == 0
+        try:
+            r = fn()
+        except Exception as e:  # noqa: BLE001
+            if PG and first and isinstance(e, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+                try:
+                    self._reconnect()
+                    r = fn()
+                    self._n += 1 if write else 0
+                    return r
+                except Exception:  # noqa: BLE001
+                    pass
+            self._n = 0
             try:
                 self.raw.rollback()
             except Exception:  # noqa: BLE001
                 _local.con = None          # connection is gone: reconnect on next use
             raise
+        self._n += 1 if write else 0
+        return r
 
     def execute(self, sql, params=()):
         def go():
             cur = self._cur()
             cur.execute(self._sql(sql), params)
             return cur
-        return self._run(go)
+        return self._run(go, write=not sql.lstrip()[:6].upper() == "SELECT")
 
     def executemany(self, sql, rows):
         def go():
             cur = self._cur()
             cur.executemany(self._sql(sql), rows)
             return cur
-        return self._run(go)
+        return self._run(go, write=True)
 
     def commit(self):
-        self._run(self.raw.commit)
+        self._run(lambda: self.raw.commit())
+        self._n = 0
 
 
 def db():
@@ -215,6 +308,9 @@ def init_db():
     CREATE TABLE IF NOT EXISTS login_fail(ts DOUBLE PRECISION, username TEXT, ip TEXT);
     CREATE INDEX IF NOT EXISTS lf_ts ON login_fail(ts);
     CREATE TABLE IF NOT EXISTS counters(k TEXT PRIMARY KEY, v BIGINT);
+    CREATE TABLE IF NOT EXISTS nodes(name TEXT PRIMARY KEY, ts DOUBLE PRECISION, started DOUBLE PRECISION, applied_cfg BIGINT, applied_files BIGINT,
+        ok INTEGER, msg TEXT, version TEXT, engine_ok INTEGER, info TEXT);
+    CREATE TABLE IF NOT EXISTS sfiles(path TEXT PRIMARY KEY, kind TEXT, sha TEXT, mode INTEGER, data TEXT, updated DOUBLE PRECISION)
     """
     for attempt in range(40):          # the database pod may still be starting
         try:
