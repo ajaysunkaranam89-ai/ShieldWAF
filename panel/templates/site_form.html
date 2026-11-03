@@ -46,6 +46,7 @@
     <div><label>Block threshold <small>anomaly score, default 5</small></label><input type="number" name="threshold" min="1" max="100" value="{{ s.threshold }}"></div>
     <div><label>Max request body (MB)</label><input type="number" name="max_body_mb" min="1" max="1024" value="{{ s.max_body_mb }}"></div>
   </div>
+  <div class="row"><div><label>OWASP rule set channel</label><select name="crs_channel"><option value="stable" {{ 'selected' if s.crs_channel=='stable' }}>stable (the active rules)</option><option value="canary" {{ 'selected' if s.crs_channel=='canary' }}>canary (staged rules, detect-only: for testing a new release)</option></select></div></div>
   <label>Allowed HTTP methods <small>anything else gets 405</small></label>
   <div style="display:flex;gap:16px;flex-wrap:wrap">{% for m in all_methods %}<label class="chk"><input type="checkbox" name="methods" value="{{ m }}" {{ 'checked' if m in s.methods.split() }}> {{ m }}</label>{% endfor %}</div>
   <label>Rule exclusions <small>(false-positive tuning) one per line: <span class="mono">RULEID</span> or <span class="mono">RULEID /path</span></small></label>
@@ -76,6 +77,15 @@
   <div><label>Password <small>(10+ characters)</small></label><input type="password" name="auth_pass_new" autocomplete="new-password"></div></div>
 </div>
 
+<div class="card" style="margin-top:14px">
+  <b>OpenAPI request validation</b> <span class="hint">&middot; upload your API description; requests that do not match it are refused (or only logged in detect mode)</span>
+  <div class="row"><div><label>Mode</label><select name="oa_mode"><option value="off" {{ 'selected' if s.openapi.mode=='off' }}>off</option><option value="detect" {{ 'selected' if s.openapi.mode=='detect' }}>detect (log only)</option><option value="enforce" {{ 'selected' if s.openapi.mode=='enforce' }}>enforce (block)</option></select></div>
+  <div><label>Paths that are not in the document</label><select name="oa_unknown"><option value="allow" {{ 'selected' if s.openapi.unknown_paths=='allow' }}>allow (404 from the app)</option><option value="deny" {{ 'selected' if s.openapi.unknown_paths=='deny' }}>refuse (404 from the WAF)</option></select></div></div>
+  <label class="chk"><input type="checkbox" name="oa_strict" {{ 'checked' if s.openapi.strict }}> Refuse JSON fields that the document does not define (stops mass-assignment)</label>
+  <label>OpenAPI 3 document (JSON, up to 1 MB)</label><textarea name="oa_spec" style="min-height:160px" placeholder='{"openapi":"3.0.0","paths":{ ... }}'>{{ s.openapi.spec }}</textarea>
+  {% if s.openapi.report %}<details><summary>What is enforced ({{ s.openapi.report|length }} notes)</summary><ul class="hint">{% for r in s.openapi.report %}<li>{{ r }}</li>{% endfor %}</ul></details>{% endif %}
+  <p class="hint">Checked: paths and methods, query parameters, required and unknown fields, integer / number / boolean / enum values, ranges and lengths, content type. Not checked: oneOf / anyOf / allOf, formats, patterns, and the difference between a JSON string and a number. Convert YAML to JSON first.</p>
+</div>
 <div class="card" style="margin-top:14px">
   <b>Positive security model</b> <span class="hint">&middot; instead of looking for bad patterns, allow only what the application really uses; everything else is refused</span>
   <label class="chk"><input type="checkbox" name="pos_enabled" {{ 'checked' if s.positive.enabled }}> Allow only the paths, content types and URL length listed here</label>

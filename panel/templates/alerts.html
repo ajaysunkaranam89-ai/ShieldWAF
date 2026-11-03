@@ -1,0 +1,61 @@
+{% extends "base.html" %}{% block title %}Alerts - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Alerts and SIEM export</h1>
+<p class="sub">Get told when something needs attention, and send security events to your log platform. Secrets (webhook addresses, SMTP password, collector tokens) are stored only in a protected file on the data volume and are never shown again.</p>
+
+<div class="card"><b>Channels</b>
+  <table><tr><th>Name</th><th>Type</th><th>Target</th><th>Minimum severity</th><th>SIEM export</th><th>Status</th><th></th></tr>
+  {% for c in al.channels %}<tr><td><b>{{ c.name }}</b></td><td>{{ c.type }}{% if c.kind %} ({{ c.kind }}){% endif %}{% if c.format %} ({{ c.format }}/{{ c.proto }}){% endif %}</td>
+    <td class="mono">{{ c.host }}{% if c.port %}:{{ c.port }}{% endif %}</td><td>{{ c.min_severity }}</td>
+    <td>{% if c.forward %}<span class="pill p-info">all security events</span>{% else %}<span class="hint">alerts only</span>{% endif %}</td>
+    <td>{% if c.enabled %}<span class="pill p-ok">on</span>{% else %}<span class="pill p-mut">off</span>{% endif %}</td>
+    <td>
+      <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="test"><input type="hidden" name="id" value="{{ c.id }}"><button class="btn sec sm">Test</button></form>
+      <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="toggle"><input type="hidden" name="id" value="{{ c.id }}"><button class="btn sec sm">{{ 'Turn off' if c.enabled else 'Turn on' }}</button></form>
+      <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="delete"><input type="hidden" name="id" value="{{ c.id }}"><button class="btn dng sm" data-confirm="Delete channel {{ c.name }}?">Delete</button></form></td></tr>
+  {% else %}<tr><td colspan="7" class="hint">No channels yet. Add one below.</td></tr>{% endfor %}</table></div>
+
+<div class="card" style="margin-top:14px"><b>Add a channel</b>
+  <details open><summary>Webhook: Slack, Microsoft Teams, Discord or any JSON endpoint</summary>
+    <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="add"><input type="hidden" name="type" value="webhook">
+    <div class="row"><div><label>Name</label><input type="text" name="name" required></div><div><label>Kind</label><select name="kind"><option value="slack">Slack</option><option value="teams">Microsoft Teams</option><option value="discord">Discord</option><option value="generic">generic JSON</option></select></div>
+    <div><label>Minimum severity</label><select name="min_severity"><option value="info">info</option><option value="warning">warning</option><option value="critical">critical</option></select></div></div>
+    <label>Webhook address <small>(treated as a secret)</small></label><input type="password" name="url" autocomplete="off" placeholder="https://hooks.slack.com/services/..." required>
+    <p><button class="btn">Add webhook</button></p></form></details>
+  <details><summary>Email (SMTP)</summary>
+    <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="add"><input type="hidden" name="type" value="email">
+    <div class="row"><div><label>Name</label><input type="text" name="name" required></div><div><label>SMTP server</label><input type="text" name="host" required></div><div><label>Port</label><input type="number" name="port" value="587"></div>
+    <div><label>Encryption</label><select name="tls"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option><option value="none">none (internal relay only)</option></select></div></div>
+    <div class="row"><div><label>User <small>(optional)</small></label><input type="text" name="user" autocomplete="off"></div><div><label>Password <small>(optional, secret)</small></label><input type="password" name="password" autocomplete="new-password"></div>
+    <div><label>From</label><input type="text" name="from" placeholder="waf@example.com" required></div><div><label>To <small>(comma separated)</small></label><input type="text" name="to" placeholder="secops@example.com" required></div>
+    <div><label>Minimum severity</label><select name="min_severity"><option value="info">info</option><option value="warning" selected>warning</option><option value="critical">critical</option></select></div></div>
+    <p><button class="btn">Add email channel</button></p></form></details>
+  <details><summary>Syslog (SIEM): RFC 5424 JSON or CEF</summary>
+    <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="add"><input type="hidden" name="type" value="syslog">
+    <div class="row"><div><label>Name</label><input type="text" name="name" required></div><div><label>Collector host</label><input type="text" name="host" required></div><div><label>Port</label><input type="number" name="port" value="514"></div>
+    <div><label>Protocol</label><select name="proto"><option value="udp">UDP</option><option value="tcp">TCP</option></select></div><div><label>Format</label><select name="format"><option value="json">JSON</option><option value="cef">CEF</option></select></div>
+    <div><label>Minimum severity</label><select name="min_severity"><option value="info">info</option><option value="warning">warning</option><option value="critical">critical</option></select></div></div>
+    <label class="chk"><input type="checkbox" name="forward" checked> Also send every blocked / detected request (SIEM export)</label>
+    <p><button class="btn">Add syslog channel</button></p></form></details>
+  <details><summary>HTTP event collector: Splunk HEC, Elastic, any JSON endpoint</summary>
+    <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="add"><input type="hidden" name="type" value="collector">
+    <div class="row"><div><label>Name</label><input type="text" name="name" required></div><div><label>Minimum severity</label><select name="min_severity"><option value="info">info</option><option value="warning">warning</option><option value="critical">critical</option></select></div></div>
+    <label>Collector address <small>(secret)</small></label><input type="password" name="url" autocomplete="off" placeholder="https://splunk.example.com:8088/services/collector/raw" required>
+    <label>Authorization header value <small>(optional, secret, e.g. "Splunk &lt;token&gt;" or "Bearer &lt;token&gt;")</small></label><input type="password" name="auth" autocomplete="new-password">
+    <label class="chk"><input type="checkbox" name="forward" checked> Also send every blocked / detected request (SIEM export)</label>
+    <p><button class="btn">Add collector</button></p></form></details>
+</div>
+
+<div class="card" style="margin-top:14px"><b>Which events send an alert</b>
+  <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="events">
+  {% for key, ev in labels.items() if key != 'test' %}<label class="chk"><input type="checkbox" name="ev_{{ key }}" {{ 'checked' if al.events.get(key, True) }}> {{ ev[0] }} <span class="pill p-mut">{{ ev[1] }}</span></label>{% endfor %}
+  <div class="row"><div><label>Repeat the same alert at most every (seconds)</label><input type="number" name="cooldown" min="10" max="86400" value="{{ al.cooldown_s }}"></div>
+  <div><label>Attack-spike threshold (blocked requests per minute)</label><input type="number" name="bpm" min="5" max="100000" value="{{ al.spike.blocked_per_min }}"></div></div>
+  <label class="chk"><input type="checkbox" name="spike_on" {{ 'checked' if al.spike.enabled }}> Watch for attack spikes</label>
+  <p><button class="btn">Save</button></p></form></div>
+
+<div class="card" style="margin-top:14px"><b>Recent deliveries</b>
+  <table><tr><th>Time</th><th>Channel</th><th>Event</th><th>Message</th><th>Result</th></tr>
+  {% for r in log %}<tr><td>{{ r.ts|ts }}</td><td>{{ r.channel }}</td><td>{{ r.event }}</td><td>{{ r.title }}</td><td>{% if r.ok %}<span class="pill p-ok">delivered</span>{% else %}<span class="pill p-err">failed</span> <span class="hint">{{ r.error }}</span>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="5" class="hint">Nothing sent yet.</td></tr>{% endfor %}</table></div>
+{% endblock %}

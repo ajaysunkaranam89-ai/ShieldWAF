@@ -3,6 +3,6 @@
 <h1>Audit trail</h1>
 <p class="sub">Who changed what (latest 300 admin actions).</p>
 <div class="card"><table><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th><th>From</th></tr>
-{% for r in rows %}<tr><td style="white-space:nowrap">{{ r.ts|ts }}</td><td>{{ r.user }}</td><td>{{ r.action }}</td><td class="mono">{{ r.detail }}</td><td class="mono">{{ r.ip }}</td></tr>
+{% for r in rows %}<tr><td style="white-space:nowrap">{{ r.ts|ts }}</td><td>{{ r.username }}</td><td>{{ r.action }}</td><td class="mono">{{ r.detail }}</td><td class="mono">{{ r.ip }}</td></tr>
 {% else %}<tr><td colspan="5" class="hint">Empty.</td></tr>{% endfor %}</table></div>
 {% endblock %}

@@ -6,8 +6,11 @@ import threading
 import time
 from datetime import datetime
 
+import alerts
+import crsupdate
 import engine
 import feeds
+import security
 import store
 
 LOG_DIR = engine.LOG_DIR
@@ -88,6 +91,7 @@ def ingest_audit():
         con = store.db()
         con.executemany("INSERT INTO events(ts,ip,host,method,uri,rule_id,msg,score,status,blocked) VALUES(?,?,?,?,?,?,?,?,?,?)", rows)
         con.commit()
+        alerts.forward_events([dict(zip(("ts", "ip", "host", "method", "uri", "rule_id", "msg", "score", "status", "blocked"), r), kind="waf_event") for r in rows])
         store.counter_add("blocked_events", sum(r[-1] for r in rows))
         store.counter_add("detected_events", sum(1 - r[-1] for r in rows))
 
@@ -117,7 +121,7 @@ def _autoban_locked():
     ab = cfg["settings"]["autoban"]
     if ab["enabled"]:
         rows = store.db().execute(
-            "SELECT ip, COUNT(*) c FROM access WHERE ts>? AND status IN (403,429) GROUP BY ip HAVING c>=?",
+            "SELECT ip, COUNT(*) c FROM access WHERE ts>? AND status IN (403,429) GROUP BY ip HAVING COUNT(*)>=?",
             (now - ab["window_min"] * 60, ab["threshold"])).fetchall()
         never, already = _never(cfg), {b["ip"] for b in cfg["bans"]}
         for r in rows:
@@ -130,6 +134,7 @@ def _autoban_locked():
             cfg["bans"].append({"ip": r["ip"], "until": now + ab["ban_min"] * 60, "manual": False,
                                 "reason": f"auto-ban: {r['c']} blocked requests in {ab['window_min']} min"})
             store.audit("system", "auto-ban", f"{r['ip']} ({r['c']} blocks)")
+            alerts.notify("auto_ban", f"Auto-ban: {r['ip']}", f"{r['c']} blocked requests in {ab['window_min']} min", key="ban:" + r["ip"])
             changed = True
     if changed and _applier:
         ok, msg = _applier(cfg)
@@ -172,6 +177,8 @@ def run_feed_refresh():
                 _applier(cfg)
         store.save(cfg)
     store.audit("system", "threat feeds refreshed" if ok else "threat feed refresh failed", f"{count} networks {err}"[:200])
+    if not ok:
+        alerts.notify("feeds_failed", "Threat feed refresh failed", err)
     return ok, count, err
 
 
@@ -235,6 +242,123 @@ def ddos_tick():
             if ok:
                 store.save(cfg)
                 store.audit("system", "auto under-attack", "; ".join(changed))
+                alerts.notify("under_attack", "Under-attack mode changed automatically", "; ".join(changed), severity="warning", force=True)
+
+
+
+_mon = {"engine_ok": True, "down_since": 0.0}
+
+
+def health_tick():
+    """Engine watchdog: alert when the engine stops answering for 30 s, and again when it is back."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{engine.HTTP_PORT}/__shieldwaf_health", timeout=2) as r:  # nosec B310 - fixed loopback URL
+            ok = r.status == 200
+    except Exception:  # noqa: BLE001
+        ok = False
+    now = time.time()
+    if ok:
+        if not _mon["engine_ok"]:
+            alerts.notify("engine_recovered", "Firewall engine is back", f"It was down for {int(now - _mon['down_since'])} s.", force=True)
+        _mon.update(engine_ok=True, down_since=0.0)
+    else:
+        if _mon["down_since"] == 0.0:
+            _mon["down_since"] = now
+        if _mon["engine_ok"] and now - _mon["down_since"] >= 30:
+            _mon["engine_ok"] = False
+            alerts.notify("engine_down", "Firewall engine is not answering", "No health reply for 30 seconds. Traffic to protected sites is failing.", force=True)
+
+
+def spike_tick():
+    """Alert when blocked requests in the last minute exceed the configured number."""
+    sp = store.load()["settings"]["alerts"]["spike"]
+    if not sp["enabled"]:
+        return
+    n = store.db().execute("SELECT COUNT(*) c FROM access WHERE ts>? AND status IN (403,429)", (time.time() - 60,)).fetchone()["c"]
+    if n >= int(sp["blocked_per_min"]):
+        top = store.db().execute("SELECT ip, COUNT(*) c FROM access WHERE ts>? AND status IN (403,429) GROUP BY ip ORDER BY c DESC LIMIT 3",
+                                 (time.time() - 60,)).fetchall()
+        alerts.notify("attack_spike", f"{n} blocked requests in the last minute", "Top sources: " + ", ".join(f"{r['ip']} ({r['c']})" for r in top))
+
+
+def cert_tick():
+    """Daily: warn about certificates that expire within 21 days."""
+    if time.time() - float(store.meta_get("cert_check", 0)) < 86400:
+        return
+    store.meta_set("cert_check", time.time())
+    for s in store.load()["sites"]:
+        if s["tls"]["enabled"]:
+            ci = security.cert_info(security.cert_paths(s)[0])
+            if ci and ci["days_left"] is not None and ci["days_left"] < 21:
+                alerts.notify("cert_expiring", f"Certificate for {s['host']} expires in {ci['days_left']} days", "Renew it (or check cert-manager).", key="cert:" + s["host"], force=True)
+
+
+
+def _ver(v):
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return (0,)
+
+
+def run_crs_check():
+    """Ask GitHub for the latest CRS release. Returns (tag, newer_than_active, error)."""
+    err, tag = "", ""
+    try:
+        tag = crsupdate.latest_tag()
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"[:200]
+    with store._lock:
+        cfg = store.load()
+        c = cfg["settings"]["crs"]
+        c["checked_at"], c["error"] = time.time(), err
+        newer = False
+        if tag:
+            c["latest"] = tag
+            newer = _ver(tag[1:]) > _ver(crsupdate.version_of(crsupdate.active_dir(cfg)) or "0")
+        store.save(cfg)
+    if newer and c.get("notified") != tag:
+        alerts.notify("rules_update", f"OWASP rule set {tag} is available", "Stage it, canary-test it, then promote it (Rule updates page).", key="crs:" + tag, force=True)
+    return tag, newer, err
+
+
+def run_crs_stage(tag=None):
+    """Download + verify + stage a release (never activates it). Returns (ok, message)."""
+    try:
+        tag = tag or crsupdate.latest_tag()
+        ver, sha = crsupdate.stage(tag)
+    except Exception as e:  # noqa: BLE001
+        with store._lock:
+            cfg = store.load()
+            cfg["settings"]["crs"]["error"] = f"{type(e).__name__}: {e}"[:200]
+            store.save(cfg)
+        return False, str(e)
+    with store._lock:
+        cfg = store.load()
+        c = cfg["settings"]["crs"]
+        c.update(staged=tag, staged_sha256=sha, staged_at=time.time(), error="", latest=tag)
+        ok, msg = _applier(cfg) if _applier else (True, "")
+        if ok:
+            store.save(cfg)
+        else:
+            c.update(staged="", staged_sha256="")
+            c["error"] = ("the engine refused the new rule set: " + msg)[:200]
+            store.save(cfg)
+    store.audit("system", "rule set staged" if ok else "rule set staging failed", f"{tag} sha256={sha[:16]}")
+    if ok:
+        alerts.notify("rules_update", f"OWASP rule set {tag} is staged", "Canary sites now run it in detect-only mode. Review, then promote.", key="crs-staged:" + tag, force=True)
+    return ok, msg
+
+
+def crs_tick():
+    c = store.load()["settings"]["crs"]
+    if time.time() - c["checked_at"] < 6 * 3600:
+        return
+    tag, newer, err = run_crs_check()
+    cfg = store.load()
+    if newer and cfg["settings"]["crs"]["auto_stage"] and cfg["settings"]["crs"]["staged"] != tag:
+        run_crs_stage(tag)
 
 
 def _loop(fn, every):
@@ -249,5 +373,6 @@ def _loop(fn, every):
 def start(applier):
     global _applier
     _applier = applier
-    for fn, every in ((ingest_access, 2), (ingest_audit, 2), (autoban_tick, 15), (prune, 3600), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3)):
+    alerts.start()
+    for fn, every in ((ingest_access, 2), (ingest_audit, 2), (autoban_tick, 15), (prune, 3600), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (health_tick, 5), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900)):
         threading.Thread(target=_loop, args=(fn, every), daemon=True, name=fn.__name__).start()

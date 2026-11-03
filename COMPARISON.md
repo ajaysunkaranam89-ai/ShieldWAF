@@ -31,6 +31,10 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 | Layer-7 flood defence | **yes**: under-attack mode + automatic escalation | HTTP Flood menu (?) | bad behavior, limits; anti-DDoS plugin is Pro |
 | Volumetric (network) DDoS | no (impossible in a cluster: needs provider / CDN, see docs/DDOS.md) | no | no |
 | Users and roles | **yes**: administrators + read-only viewers | (?) | Pro (user manager) |
+| Alerting and SIEM export | **yes**: webhook (Slack/Teams/Discord), email, syslog (JSON/CEF), HTTP collector; per-event rules and delivery log | (?) | Pro (reporting / monitoring) |
+| Rule-set updates | **yes**: staged, detect-only canary, approval, rollback (no silent changes) | managed by the vendor (?) | plugin updates; CRS version follows releases |
+| API schema validation (OpenAPI) | **yes**, enforced / detect | (?) | **Pro** (OpenAPI validator plugin) |
+| Database | **PostgreSQL** | PostgreSQL | MariaDB |
 | Metrics / dashboards | built-in dashboard + Prometheus `/metrics` (token) | built-in statistics | built-in; Prometheus exporter is Pro |
 | Attack log with rule ids | yes, searchable | yes ("Attacks" menu) | yes (Reports) |
 | Audit trail of admin actions (with IPs) | yes | (?) | Pro (reporting/user manager) |
@@ -49,4 +53,4 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 
 ## Feature score (the author's own 20-item checklist of practical WAF features)
 Verified here: **A Shield WAF about 19 / 20 (95%)**, BunkerWeb free about 15 / 20, SafeLine not measurable on this cluster.
-The missing point is alerting / SIEM export (planned). This is a self-assessment, not a benchmark, and it says nothing about maturity or independent assurance.
+The missing point is a built-in Grafana-style dashboard bundle. This is a self-assessment, not a benchmark, and it says nothing about maturity or independent assurance.

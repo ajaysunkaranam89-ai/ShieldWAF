@@ -12,7 +12,9 @@ import shutil
 import subprocess
 import time
 
+import crsupdate
 import feeds
+import openapi
 import pages
 import security
 import store
@@ -64,8 +66,10 @@ def effective(site):
     return s
 
 
-def _modsec_site(site, gen):
+def _modsec_site(site, gen, crs_dir=crsupdate.BAKED, canary=False):
     mode = {"block": "On", "detect": "DetectionOnly"}.get(site["mode"], "Off")
+    if canary:
+        mode = "DetectionOnly" if mode != "Off" else "Off"      # a canary rule set must never block anyone
     body = int(site["max_body_mb"]) * 1024 * 1024
     lines = [
         f"SecRuleEngine {mode}", "SecRequestBodyAccess On", f"SecRequestBodyLimit {body}", "SecRequestBodyNoFilesLimit 262144",
@@ -88,7 +92,10 @@ def _modsec_site(site, gen):
             lines.append(f'SecRule REQUEST_URI "@beginsWith {ex["path"]}" "id:{uid},phase:1,pass,nolog,ctl:ruleRemoveById={ex["rule"]}"')
     if site["custom_rules"].strip():
         lines += ["# ---- custom rules (admin supplied) ----", site["custom_rules"].strip()]
-    lines += [f"Include {MODSEC_DIR}/owasp-crs/crs-setup.conf", f"Include {MODSEC_DIR}/owasp-crs/rules/*.conf"]
+    oa = site["openapi"]
+    if oa["mode"] != "off" and oa["spec"].strip():
+        lines.append(openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"])[0])
+    lines += [f"Include {crs_dir}/crs-setup.conf", f"Include {crs_dir}/rules/*.conf"]
     for ex in site["exclusions"]:
         if not ex.get("path"):
             lines.append(f"SecRuleRemoveById {ex['rule']}")
@@ -207,6 +214,9 @@ def render(cfg):
         if tp:
             real_ip = "  real_ip_header X-Forwarded-For;\n  real_ip_recursive on;\n" + "".join(f"  set_real_ip_from {c};\n" for c in tp)
         sites = [effective(s) for s in cfg["sites"] if s["enabled"]]
+        crs_active, crs_staged = crsupdate.active_dir(cfg), crsupdate.staged_dir(cfg)
+        if not os.path.isdir(crs_active):
+            raise ValueError("the active OWASP rule set directory is missing")
         feed_src = feeds.feed_file() if st["feeds"]["enabled"] else None
         feed_on = bool(feed_src)
         if feed_on:
@@ -236,8 +246,9 @@ def render(cfg):
                 with open(f"{pd}/{name}", "w", encoding="utf-8") as f:
                     f.write(pages.fill(html, s["host"]))
             if s["mode"] != "off":
+                is_canary = s["crs_channel"] == "canary" and crs_staged is not None
                 with open(f"{gen}/ms-{s['id']}.conf", "w") as f:
-                    f.write(_modsec_site(s, gen))
+                    f.write(_modsec_site(s, gen, crs_staged if is_canary else crs_active, is_canary))
             if s["auth"]["enabled"] and s["auth"]["users"]:
                 with open(f"{gen}/htpasswd-{s['id']}", "w") as f:
                     f.write("".join(f"{u}:{h}\n" for u, h in s["auth"]["users"].items()))

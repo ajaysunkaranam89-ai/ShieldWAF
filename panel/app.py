@@ -17,14 +17,17 @@ from datetime import datetime
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import alerts
 import background
+import crsupdate
 import engine
 import feeds
+import openapi
 import pages
 import security
 import store
 
-VERSION = "2.1"
+VERSION = "2.2"
 app = Flask(__name__)
 store.init_db()
 
@@ -126,7 +129,7 @@ def start_session(user):
 def end_session(all_for_user=None, keep=None):
     con = store.db()
     if all_for_user:
-        con.execute("DELETE FROM sessions WHERE user=? AND sid!=?", (all_for_user, keep or ""))
+        con.execute("DELETE FROM sessions WHERE username=? AND sid!=?", (all_for_user, keep or ""))
     elif session.get("sid"):
         con.execute("DELETE FROM sessions WHERE sid=?", (session["sid"],))
     con.commit()
@@ -139,7 +142,7 @@ def session_valid():
     row = store.db().execute("SELECT * FROM sessions WHERE sid=?", (sid,)).fetchone()
     now = time.time()
     idle = int(store.load()["settings"]["session_idle_min"]) * 60
-    if not row or row["user"] != session.get("user") or now - row["last"] > idle or now - row["created"] > ABS_SESSION:
+    if not row or row["username"] != session.get("user") or now - row["last"] > idle or now - row["created"] > ABS_SESSION:
         if row:
             end_session()
         return False
@@ -223,6 +226,7 @@ def apply_cfg(cfg, action, detail=""):
         flash(f"{action}: {msg}", "ok")
     else:
         flash(f"NOT applied (old config kept). {msg}", "err")
+        alerts.notify("config_failed", f"Configuration change refused: {action}", str(msg)[:300])
     return ok
 
 
@@ -293,6 +297,19 @@ def validate_site(s, cfg):
         return "Country rules: use two-letter codes such as IN US CN."
     if g["mode"] != "off" and not codes:
         return "Country rules: enter at least one country code."
+    if s["crs_channel"] not in ("stable", "canary"):
+        return "Rule channel must be stable or canary."
+    oa = s["openapi"]
+    if oa["mode"] not in ("off", "detect", "enforce") or oa["unknown_paths"] not in ("allow", "deny"):
+        return "OpenAPI: invalid mode."
+    if oa["mode"] != "off":
+        if not oa["spec"].strip():
+            return "OpenAPI: paste the OpenAPI 3 document (JSON) or switch the mode off."
+        try:
+            _rules, rep = openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"])
+            oa["report"] = rep[:200]
+        except openapi.SpecError as e:
+            return f"OpenAPI: {e}"
     return None
 
 
@@ -336,6 +353,9 @@ def parse_site(form, cfg, existing=None):
                           "exclude_paths": form.get("chal_exclude", "")},
             "positive": {"enabled": bool(form.get("pos_enabled")), "paths": form.get("pos_paths", ""),
                          "content_types": form.get("pos_types", ""), "max_url": int(form.get("pos_max_url", 2048) or 2048)},
+            "openapi": {"mode": form.get("oa_mode", "off"), "spec": form.get("oa_spec", ""), "strict": bool(form.get("oa_strict")),
+                        "unknown_paths": form.get("oa_unknown", "allow"), "report": []},
+            "crs_channel": form.get("crs_channel", "stable"),
             "geo": {"mode": form.get("geo_mode", "off"), "countries": " ".join(engine.split_lines(form.get("geo_countries", "").upper()))},
             "exclusions": ex, "custom_rules": form.get("custom_rules", ""),
             "page_maint": form.get("page_maint", ""), "page_down": form.get("page_down", ""),
@@ -372,7 +392,7 @@ def engine_up():
 def _locked(user, ip):
     cut = time.time() - 900
     con = store.db()
-    by_user = con.execute("SELECT COUNT(*) c FROM login_fail WHERE ts>? AND user=?", (cut, user)).fetchone()["c"]
+    by_user = con.execute("SELECT COUNT(*) c FROM login_fail WHERE ts>? AND username=?", (cut, user)).fetchone()["c"]
     by_ip = con.execute("SELECT COUNT(*) c FROM login_fail WHERE ts>? AND ip=?", (cut, ip)).fetchone()["c"]
     return by_user >= 5 or by_ip >= 15
 
@@ -419,6 +439,7 @@ def login():
     if request.method == "POST":
         ip, name = client_ip(), request.form.get("username", "").strip()
         if _locked(name, ip):
+            alerts.notify("login_lockout", f"Admin login locked: {name or '?'}", f"from {ip}", key="lock:" + name)
             flash("Too many failed attempts. Try again in 15 minutes.", "err")
             return render_template("login.html"), 429
         u = cfg["users"].get(name)
@@ -512,6 +533,7 @@ def security_view():
                     u.update({"totp_secret": "", "totp_enabled": False, "recovery": []})
                     store.save(cfg)
                     store.audit(me(), "2fa disabled", "", client_ip())
+                    alerts.notify("admin_change", f"Two-factor login disabled for {me()}", f"from {client_ip()}", force=True)
                     flash("Two-factor login disabled.", "ok")
                 else:
                     flash("Password or code is wrong.", "err")
@@ -538,13 +560,16 @@ def dashboard():
     rl = q("SELECT COUNT(*) c FROM access WHERE ts>? AND status=429", since)[0]["c"]
     err = q("SELECT COUNT(*) c FROM access WHERE ts>? AND status>=500", since)[0]["c"]
     hours = {int(r["h"]): (r["t"], r["b"]) for r in q(
-        "SELECT CAST(ts/3600 AS INT) h, COUNT(*) t, SUM(status IN (403,429)) b FROM access WHERE ts>? GROUP BY h", since)}
+        f"SELECT {store.HOUR} h, COUNT(*) t, SUM(CASE WHEN status IN (403,429) THEN 1 ELSE 0 END) b FROM access WHERE ts>? GROUP BY h", since)}  # nosec B608 - store.HOUR is a code constant, the only variable is a bound parameter
     cur = int(now // 3600)
     series = [(datetime.fromtimestamp((cur - i) * 3600).strftime("%H:00"),) + tuple(hours.get(cur - i, (0, 0))) for i in range(23, -1, -1)]
     peak = max([s[1] for s in series] + [1])
     warn = []
     if not cfg["users"].get(me(), {}).get("totp_enabled"):
         warn.append("Two-factor login is not enabled for your account. Enable it under Security.")
+    cr = cfg["settings"]["crs"]
+    if cr["staged"]:
+        warn.append(f"OWASP rule set {cr['staged']} is staged: review it on the Rule updates page and promote or discard it.")
     fd = cfg["settings"]["feeds"]
     if fd["enabled"] and not fd["last_ok"]:
         warn.append("Threat feeds are enabled but have not been downloaded yet (Threat intel page: Refresh now).")
@@ -556,7 +581,7 @@ def dashboard():
             pass
     return render_template(
         "dashboard.html", cfg=cfg, total=total, waf=waf, rl=rl, err=err, series=series, peak=peak, warn=warn,
-        top_rules=q("SELECT rule_id, msg, COUNT(*) c FROM events WHERE blocked=1 AND rule_id!='' AND ts>? GROUP BY rule_id ORDER BY c DESC LIMIT 8", since),
+        top_rules=q("SELECT rule_id, MIN(msg) msg, COUNT(*) c FROM events WHERE blocked=1 AND rule_id!='' AND ts>? GROUP BY rule_id ORDER BY c DESC LIMIT 8", since),
         top_ips=q("SELECT ip, COUNT(*) c FROM access WHERE ts>? AND status IN (403,429) GROUP BY ip ORDER BY c DESC LIMIT 8", since),
         recent=q("SELECT * FROM events ORDER BY ts DESC LIMIT 10"),
         under=sum(1 for s in cfg["sites"] if s["under_attack"]), maint=sum(1 for s in cfg["sites"] if s["maintenance"]), bans=sum(1 for b in cfg["bans"] if b["until"] > now), up=engine_up())
@@ -731,8 +756,8 @@ def logs():
         sql += " AND host=?"
         args.append(host)
     if qtxt:
-        sql += " AND (uri LIKE ? OR msg LIKE ? OR ip LIKE ? OR rule_id LIKE ?)"
-        args += [f"%{qtxt}%"] * 4
+        sql += " AND (LOWER(uri) LIKE ? OR LOWER(msg) LIKE ? OR LOWER(ip) LIKE ? OR LOWER(rule_id) LIKE ?)"
+        args += [f"%{qtxt.lower()}%"] * 4
     if only == "blocked":
         sql += " AND blocked=1"
     elif only == "detected":
@@ -844,6 +869,166 @@ def password():
 
 
 
+# --- alerts and SIEM export --------------------------------------------------------------------
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+@app.route("/alerts", methods=["GET", "POST"])
+def alerts_view():
+    if role() != "admin":
+        abort(403)
+    with store._lock:
+        cfg = store.load()
+        al = cfg["settings"]["alerts"]
+        if request.method == "POST":
+            act = request.form.get("act")
+            if act == "events":
+                try:
+                    cd, bpm = int(request.form.get("cooldown", 300)), int(request.form.get("bpm", 100))
+                    if not (10 <= cd <= 86400 and 5 <= bpm <= 100000):
+                        raise ValueError("range")
+                except ValueError:
+                    flash("Cooldown 10-86400 s, spike threshold 5-100000 per minute.", "err")
+                    return redirect(url_for("alerts_view"))
+                for k in al["events"]:
+                    al["events"][k] = bool(request.form.get(f"ev_{k}"))
+                al["cooldown_s"], al["spike"] = cd, {"enabled": bool(request.form.get("spike_on")), "blocked_per_min": bpm}
+                store.save(cfg)
+                store.audit(me(), "alert settings saved", "", client_ip())
+                flash("Alert settings saved.", "ok")
+            elif act == "add":
+                err = _add_channel(cfg, al, request.form)
+                flash(err or "Channel added. Press Test to check it.", "err" if err else "ok")
+            elif act in ("toggle", "delete", "test"):
+                ch = next((c for c in al["channels"] if c["id"] == request.form.get("id")), None)
+                if not ch:
+                    flash("Unknown channel.", "err")
+                elif act == "toggle":
+                    ch["enabled"] = not ch["enabled"]
+                    store.save(cfg)
+                elif act == "delete":
+                    al["channels"] = [c for c in al["channels"] if c["id"] != ch["id"]]
+                    alerts.delete_secret(ch["id"])
+                    store.save(cfg)
+                    store.audit(me(), "alert channel deleted", ch["name"], client_ip())
+                else:
+                    ev = {"ts": time.time(), "event": "test", "severity": "info", "title": "Test message from A Shield WAF",
+                          "detail": f"Sent by {me()}. If you can read this, the channel works.", "source": "a-shield-waf"}
+                    try:
+                        alerts.deliver(ch, ev)
+                        flash(f"Test message delivered to {ch['name']}.", "ok")
+                        alerts._log(ch, ev, True)
+                    except Exception as e:  # noqa: BLE001
+                        flash(f"Delivery to {ch['name']} failed: {type(e).__name__}: {str(e)[:200]}", "err")
+                        alerts._log(ch, ev, False, str(e))
+            return redirect(url_for("alerts_view"))
+        log = store.db().execute("SELECT * FROM alert_log ORDER BY ts DESC LIMIT 30").fetchall()
+        return render_template("alerts.html", al=al, labels=alerts.EVENTS, log=log)
+
+
+def _add_channel(cfg, al, f):
+    t = f.get("type", "")
+    name = f.get("name", "").strip()[:40]
+    if not re.fullmatch(r"[A-Za-z0-9 _.\-]{2,40}", name) or any(c["name"] == name for c in al["channels"]):
+        return "Channel name: 2-40 letters, digits, space . _ - and not already used."
+    if len(al["channels"]) >= 12:
+        return "At most 12 channels."
+    ch = {"id": "c" + secrets.token_hex(3), "type": t, "name": name, "enabled": True,
+          "min_severity": f.get("min_severity", "info") if f.get("min_severity") in ("info", "warning", "critical") else "info",
+          "forward": bool(f.get("forward"))}
+    sec = {}
+    try:
+        if t == "webhook":
+            err = alerts.check_url(f.get("url", "").strip())
+            if err:
+                return err
+            sec["url"], ch["kind"], ch["host"] = f["url"].strip(), (f.get("kind") if f.get("kind") in ("generic", "slack", "teams", "discord") else "generic"), urlparse_host(f["url"])
+        elif t == "collector":
+            err = alerts.check_url(f.get("url", "").strip())
+            if err:
+                return err
+            sec["url"], ch["host"] = f["url"].strip(), urlparse_host(f["url"])
+            if f.get("auth", "").strip():
+                sec["auth"] = f["auth"].strip()[:500]
+        elif t == "email":
+            host, port = f.get("host", "").strip(), int(f.get("port", 587))
+            to = [x.strip() for x in f.get("to", "").replace(";", ",").split(",") if x.strip()]
+            if not (1 <= port <= 65535) or not to or len(to) > 10 or any(not EMAIL_RE.match(x) for x in to) or not EMAIL_RE.match(f.get("from", "").strip()):
+                return "Email: check the port and the From / To addresses."
+            err = alerts.check_target(host)
+            if err:
+                return err
+            ch.update(host=host, port=port, tls=f.get("tls") if f.get("tls") in ("starttls", "ssl", "none") else "starttls", user=f.get("user", "").strip()[:100],
+                      **{"from": f["from"].strip(), "to": to})
+            if f.get("password"):
+                sec["password"] = f["password"][:200]
+        elif t == "syslog":
+            host, port = f.get("host", "").strip(), int(f.get("port", 514))
+            if not (1 <= port <= 65535):
+                return "Port out of range."
+            err = alerts.check_target(host)
+            if err:
+                return err
+            ch.update(host=host, port=port, proto=f.get("proto") if f.get("proto") in ("udp", "tcp") else "udp",
+                      format=f.get("format") if f.get("format") in ("json", "cef") else "json")
+        else:
+            return "Choose a channel type."
+    except ValueError:
+        return "A number in the form is not valid."
+    alerts.save_secret(ch["id"], sec)
+    al["channels"].append(ch)
+    store.save(cfg)
+    store.audit(me(), "alert channel added", f"{name} ({t})", client_ip())
+    return None
+
+
+def urlparse_host(url):
+    from urllib.parse import urlparse
+    return urlparse(url).hostname or ""
+
+
+# --- OWASP rule-set updates ---------------------------------------------------------------------
+@app.route("/rules", methods=["GET", "POST"])
+def rules_view():
+    if role() != "admin":
+        abort(403)
+    with store._lock:
+        cfg = store.load()
+        c = cfg["settings"]["crs"]
+        if request.method == "POST":
+            act = request.form.get("act")
+            if act == "check":
+                threading.Thread(target=background.run_crs_check, daemon=True).start()
+                flash("Checking GitHub for the latest release; reload this page in a few seconds.", "ok")
+            elif act == "stage":
+                threading.Thread(target=background.run_crs_stage, daemon=True).start()
+                flash("Downloading and staging the latest release (about 20 seconds); reload this page.", "ok")
+            elif act == "auto":
+                c["auto_stage"] = bool(request.form.get("auto_stage"))
+                store.save(cfg)
+            elif act == "discard" and c["staged"]:
+                crsupdate.prune({c["active"], c["previous"]})
+                c.update(staged="", staged_sha256="")
+                apply_cfg(cfg, "staged rule set discarded")
+            elif act == "promote" and c["staged"]:
+                if request.form.get("confirm") != "yes":
+                    flash("Tick the confirmation box to promote.", "err")
+                else:
+                    old, new = c["active"], c["staged"]
+                    c.update(previous=old if old != "baked" or True else "", active=new, staged="", staged_sha256="")
+                    if apply_cfg(cfg, "OWASP rule set promoted", new):
+                        crsupdate.prune({c["active"], c["previous"]})
+                        alerts.notify("rules_update", f"OWASP rule set {new} is now active", f"promoted by {me()}", force=True)
+            elif act == "rollback" and c["previous"]:
+                c["active"], c["previous"] = c["previous"], c["active"]
+                apply_cfg(cfg, "OWASP rule set rolled back", c["active"])
+            return redirect(url_for("rules_view"))
+        info = {"baked": crsupdate.version_of(crsupdate.BAKED), "active": crsupdate.version_of(crsupdate.active_dir(cfg)),
+                "staged": crsupdate.version_of(crsupdate.staged_dir(cfg)) if crsupdate.staged_dir(cfg) else "",
+                "previous": (crsupdate.version_of(os.path.join(crsupdate.CRS_ROOT, c["previous"])) if c["previous"] and c["previous"] != "baked" else crsupdate.version_of(crsupdate.BAKED)) if c["previous"] else ""}
+        return render_template("rules.html", c=c, info=info, canary=[s for s in cfg["sites"] if s["crs_channel"] == "canary"])
+
+
 # --- users and roles ---------------------------------------------------------------------------
 def _admins(cfg):
     return [n for n, u in cfg["users"].items() if u.get("role", "admin") == "admin"]
@@ -870,6 +1055,7 @@ def users():
                                           "totp_last": 0, "recovery": [], "role": r, "must_change": True}
                     store.save(cfg)
                     store.audit(me(), "user added", f"{name} ({r})", client_ip())
+                    alerts.notify("admin_change", f"User {name} created ({r})", f"by {me()} from {client_ip()}", force=True)
                     flash(f"User {name} created. They must choose a new password at first login.", "ok")
             elif name in cfg["users"]:
                 u = cfg["users"][name]
@@ -879,9 +1065,10 @@ def users():
                     else:
                         del cfg["users"][name]
                         store.save(cfg)
-                        store.db().execute("DELETE FROM sessions WHERE user=?", (name,))
+                        store.db().execute("DELETE FROM sessions WHERE username=?", (name,))
                         store.db().commit()
                         store.audit(me(), "user deleted", name, client_ip())
+                        alerts.notify("admin_change", f"User {name} deleted", f"by {me()} from {client_ip()}", force=True)
                         flash(f"User {name} deleted.", "ok")
                 elif act == "role":
                     r = request.form.get("role", "viewer")
@@ -891,14 +1078,16 @@ def users():
                         u["role"] = r
                         store.save(cfg)
                         store.audit(me(), "role changed", f"{name} -> {r}", client_ip())
+                        alerts.notify("admin_change", f"Role of {name} changed to {r}", f"by {me()} from {client_ip()}", force=True)
                         flash(f"{name} is now {r}.", "ok")
                 elif act == "reset2fa":
                     u.update({"totp_secret": "", "totp_enabled": False, "recovery": []})
                     store.save(cfg)
                     store.audit(me(), "2fa reset", name, client_ip())
+                    alerts.notify("admin_change", f"Two-factor login reset for {name}", f"by {me()} from {client_ip()}", force=True)
                     flash(f"Two-factor login reset for {name}.", "ok")
                 elif act == "signout":
-                    store.db().execute("DELETE FROM sessions WHERE user=?", (name,))
+                    store.db().execute("DELETE FROM sessions WHERE username=?", (name,))
                     store.db().commit()
                     store.audit(me(), "sessions revoked", name, client_ip())
                     flash(f"All sessions of {name} were signed out.", "ok")

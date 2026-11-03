@@ -5,14 +5,16 @@ Read [`../SECURITY.md`](../SECURITY.md) first. This page only covers the cloud-s
 ## 1. Image
 Build once, push to **your private registry**, and reference it by digest.
 ```bash
-docker build -t <registry>/a-shield-waf:2.1 .
-docker push <registry>/a-shield-waf:2.1
+docker build -t <registry>/a-shield-waf:2.2 .
+docker push <registry>/a-shield-waf:2.2
+docker build -t <registry>/a-shield-waf-db:16 db && docker push <registry>/a-shield-waf-db:16     # only if you use the bundled PostgreSQL
 # then set image: <registry>/a-shield-waf@sha256:<digest> in k8s/shieldwaf.yaml (both containers) and imagePullSecrets if needed
 ```
-Scan it before every release: `trivy image --severity HIGH,CRITICAL --ignore-unfixed <registry>/a-shield-waf:2.1`.
+Scan it before every release: `trivy image --severity HIGH,CRITICAL --ignore-unfixed <registry>/a-shield-waf:2.2`.
 
-## 2. Storage
-The PVC (`shieldwaf-data`) holds the configuration, logs, certificates and the audit trail. Use an encrypted storage class
+## 2. Storage and database
+The configuration, attack log, sessions and audit trail are in **PostgreSQL**. Either keep the bundled hardened StatefulSet (create its secret with `scripts/create-db-secret.sh`) or use a **managed PostgreSQL** (Amazon RDS, Azure Database for PostgreSQL, Cloud SQL): delete the `shieldwaf-db` StatefulSet / Service / policy from the manifest and create the secret yourself with `SHIELD_DB_URL=postgresql://user:password@host:5432/dbname?sslmode=require` (key `SHIELD_DB_URL`). Enable the provider's backups and encryption.
+The PVC (`shieldwaf-data`) still holds the rendered configuration, logs, certificates, downloaded rule sets and alert secrets. Use an encrypted storage class
 (EBS gp3 with KMS, Azure Disk with CMK, GCE PD with CMEK) and snapshot it on a schedule.
 
 ## 3. Exposing the protected traffic (only 80/443)
@@ -67,10 +69,13 @@ and cloud-metadata addresses are always refused, which also blocks the classic `
 `k8s/shieldwaf.yaml` ships a default-deny policy with explicit allows. Your cluster's CNI must **enforce** NetworkPolicy (Calico, Cilium,
 AWS VPC CNI with network policy enabled, Azure NPM, GKE Dataplane V2). Check with a test pod before relying on it.
 
-## 8. Monitoring
+## 8. Alerts and log export
+Add your channels on the **Alerts** page: a Slack/Teams webhook for the on-call team, an email channel, and a syslog or HTTP collector channel with *SIEM export* ticked so every blocked request reaches your SIEM (Splunk, Elastic, Sentinel, ...). Use **Test** to verify each channel. NetworkPolicy already allows egress to private and public addresses except link-local.
+
+## 9. Monitoring
 Scrape `https://shieldwaf-panel.shieldwaf.svc:9000/metrics` with the bearer token from the panel (Settings). Alert on:
 `shieldwaf_engine_up == 0`, a sudden rise of `shieldwaf_requests_total{status="403"}`, and certificate expiry warnings on the dashboard.
 
-## 9. Availability and limits
+## 10. Availability and limits
 One replica, one volume: plan maintenance windows or run a second, independent instance behind DNS failover. Memory grows with the
 number of sites because the rule set is loaded per site; raise the panel limit (768 Mi) and the engine limit (1 Gi) accordingly.

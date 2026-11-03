@@ -1,0 +1,30 @@
+{% extends "base.html" %}{% block title %}Rule updates - A Shield WAF{% endblock %}
+{% block body %}
+<h1>OWASP rule-set updates</h1>
+<p class="sub">New attack rules are published regularly. They are checked and downloaded automatically, but <b>never switched on without your approval</b>: new rules can block legitimate users, and a tampered download could weaken protection. Flow: <b>stage</b> (download + verify) &rarr; <b>canary</b> (sites on the canary channel run it in detect-only mode) &rarr; <b>promote</b> (all sites) &rarr; <b>roll back</b> if needed.</p>
+<div class="grid g4">
+  <div class="card stat s1"><div class="n">{{ info.active or '?' }}</div><div class="l">Active rules ({{ 'built into the image' if c.active == 'baked' else 'updated' }})</div></div>
+  <div class="card stat s3"><div class="n">{{ info.staged or '-' }}</div><div class="l">Staged (canary)</div></div>
+  <div class="card stat s4"><div class="n">{{ c.latest[1:] if c.latest else '?' }}</div><div class="l">Latest release</div></div>
+  <div class="card stat s2"><div class="n">{{ info.previous or '-' }}</div><div class="l">Previous (rollback)</div></div>
+</div>
+{% if c.error %}<div class="flash err" style="margin-top:14px">Last problem: {{ c.error }}</div>{% endif %}
+<div class="card" style="margin-top:14px"><b>Actions</b>
+  <p class="hint">{% if c.checked_at %}Last checked {{ c.checked_at|ts }}.{% else %}Not checked yet.{% endif %} Downloads come only from github.com over HTTPS, are size-limited, safely unpacked, and their version is verified.</p>
+  <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="check"><button class="btn sec">Check for a new release</button></form>
+  <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="stage"><button class="btn">Download and stage the latest</button></form>
+  {% if c.previous %}<form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="rollback"><button class="btn warn" data-confirm="Go back to the previous rule set?">Roll back</button></form>{% endif %}
+  <form method="post" style="margin-top:10px"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="auto"><label class="chk"><input type="checkbox" name="auto_stage" {{ 'checked' if c.auto_stage }}> Stage new releases automatically (never promotes by itself)</label><button class="btn sec sm">Save</button></form>
+</div>
+{% if c.staged %}
+<div class="card" style="margin-top:14px"><b>Staged release {{ c.staged }}</b>
+  <p class="hint">SHA-256 of the download: <span class="mono">{{ c.staged_sha256 }}</span><br>You can compare it with a download of the same release from the project's release page.</p>
+  <p>Sites on the <b>canary</b> channel ({{ canary|length }}): {% for s in canary %}<span class="pill p-info">{{ s.host }}</span> {% else %}<span class="hint">none. Set a staging copy of a site to the canary channel (Sites, edit, WAF section) to watch the new rules without blocking anyone.</span>{% endfor %}</p>
+  <p class="hint">Compare the Attack log of canary sites ("detected" events) with your normal sites before promoting.</p>
+  <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="promote">
+    <label class="chk"><input type="checkbox" name="confirm" value="yes"> I have reviewed the canary results and want every site to use {{ c.staged }}</label>
+    <button class="btn ok">Promote to all sites</button></form>
+  <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="discard"><button class="btn dng sm" data-confirm="Discard the staged rule set?">Discard</button></form>
+</div>
+{% endif %}
+{% endblock %}

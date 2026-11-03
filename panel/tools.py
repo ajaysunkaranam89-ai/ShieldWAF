@@ -33,7 +33,7 @@ def main(argv):
             return 1
         cfg["users"][argv[1]]["hash"] = generate_password_hash(pw)
         store.save(cfg)
-        store.db().execute("DELETE FROM sessions WHERE user=?", (argv[1],))
+        store.db().execute("DELETE FROM sessions WHERE username=?", (argv[1],))
         store.db().commit()
         store.audit("operator", "set-password", argv[1])
         print("password updated and all sessions of", argv[1], "signed out")
