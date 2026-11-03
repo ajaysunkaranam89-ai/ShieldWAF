@@ -15,11 +15,26 @@ into one product:
   IP lists, auto-ban, attack log, dashboard, two-factor login, audit trail, backup, Prometheus metrics.
 - **One pod, two containers**, hardened (non-root, read-only filesystem, no capabilities, network policy). About 230 MB RAM with four sites.
 
-Free and open source. Built and tested on the kind cluster `mycluster`; cloud guide in [`docs/CLOUD.md`](docs/CLOUD.md).
-No secrets are stored in this repo: the admin account is created in your browser on first start.
+**Free and open source** (Apache-2.0), for Kubernetes (tested on kind) and the cloud. No secrets are stored in this repo: the database
+password is generated in your cluster and the admin account is created in your browser on first start.
 
-> **Read [`SECURITY.md`](SECURITY.md) before production use.** It lists what is protected, what is *not*, and what you must do.
-> This product has not had an independent security audit.
+> **Provided as is, without warranty, and not independently audited.** It is built on proven components and tested with 185 automated
+> checks, but it has not been reviewed or certified by an outside party. Read **[How secure is it?](SECURITY.md#how-secure-is-it-the-honest-summary)**
+> and the limits below before using it in production, and commission an independent test for high-value systems.
+
+## Documentation
+
+| Read this | When |
+|---|---|
+| [`docs/INSTALL.md`](docs/INSTALL.md) | step-by-step installation (kind, any Kubernetes, first login) |
+| [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) | every screen and setting, with examples |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | something does not work |
+| [`docs/CLOUD.md`](docs/CLOUD.md) | running in the cloud (registry, load balancer, cert-manager, managed PostgreSQL) |
+| [`docs/DDOS.md`](docs/DDOS.md) | denial-of-service defence: what it does, what must sit in front |
+| [`SECURITY.md`](SECURITY.md) | security design, honest assessment, limits, how to report a vulnerability |
+| [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md) | scans, scanner baseline, findings and fixes |
+| [`COMPARISON.md`](COMPARISON.md) | comparison with SafeLine and BunkerWeb |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md), [`tests/README.md`](tests/README.md) | helping, and running the test suite |
 
 ![Dashboard](docs/images/gui-dashboard.png)
 
@@ -53,6 +68,8 @@ No secrets are stored in this repo: the admin account is created in your browser
 
 ## Quick start
 
+Full instructions with explanations: [`docs/INSTALL.md`](docs/INSTALL.md). The short version:
+
 ```bash
 # 0. create the database secret (random password, kept only in the cluster, never in git)
 sh scripts/create-db-secret.sh            # Windows: .\scripts\create-db-secret.ps1
@@ -75,17 +92,15 @@ kubectl logs -n shieldwaf deploy/shieldwaf -c panel          # find the line "Se
 Open **https://localhost:9000** (the certificate is self-signed at first: accept the warning, or mount your own),
 enter the setup code, then **choose your own admin name and a strong password**. Then open **Security (2FA)** and enable two-factor login.
 
-### Add the two apps (Sites, then + Add site)
-| Host name | Upstream |
-|---|---|
-| `notes.waf.local` | `http://notes-app.notes.svc.cluster.local:80` |
-| `python.waf.local` | `http://python-app-service.python-app.svc.cluster.local:80` |
+### Protect an application (Sites, then + Add site)
+Enter the public host name and the address of your application inside the cluster, for example host `app.example.com`, upstream
+`http://my-app.my-namespace.svc.cluster.local:80`. Start in **detect only** mode, watch the attack log, then switch to **block**.
 
 ### Reach the protected apps
 ```bash
 kubectl port-forward -n shieldwaf svc/shieldwaf-proxy 8088:8080 8443:8443
 ```
-Add `127.0.0.1  notes.waf.local  python.waf.local` to your hosts file (Administrator) and open `http://notes.waf.local:8088`.
+Add `127.0.0.1  app.example.com` to your hosts file (Administrator) and open `http://app.example.com:8088`.
 For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud use a LoadBalancer service (see `docs/CLOUD.md`).
 
 ## The GUI
@@ -122,7 +137,7 @@ For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud u
 ## How it works
 
 ```
- client --Host: notes.waf.local--> [engine: nginx + ModSecurity + OWASP CRS (+ TLS, challenge)] --> notes-app / python-app-service
+ client --Host: app.example.com--> [engine: nginx + ModSecurity + OWASP CRS (+ TLS, challenge)] --> your application
                                           ^ reload, confirmed by a handshake file
                                    [panel: renders nginx + rule files into /data/rendered/gen-N, tests them, swaps "current"]
                                           | tails access.log / audit.json into SQLite -> dashboard, attack log, auto-ban
@@ -130,7 +145,8 @@ For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud u
 The two containers share only the `/data` volume: the panel writes a new generation and a `reload.request`; the engine tests and
 reloads nginx, waits until the new generation answers, and reports in `reload.status`. If it fails the panel restores the previous generation.
 
-## Test results (kind, notes app + python app as upstreams)
+## Test results (kind, two demo applications as upstreams)
+The suite is in [`tests/`](tests/README.md) and you can run it yourself (`bash tests/run.sh`, needs a test cluster, 15-25 minutes).
 An automated suite of **185 checks** (all passing on the final build, on a real cluster with a real PostgreSQL) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
 recovery codes and replay refusal, session revocation after logout and after a password change, CSP/HSTS/cookie flags, metrics token,
 panel allow-list lock-out protection, SSRF refusal (loopback, metadata address and names, allowed-suffix list), import validation,
@@ -149,10 +165,16 @@ Details in `SECURITY.md`.
 ## Comparison with SafeLine and BunkerWeb
 See [`COMPARISON.md`](COMPARISON.md).
 
+## Licence
+[Apache License 2.0](LICENSE): free to use, change and share, including commercially, with no warranty. Third-party components keep their
+own licences, see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Bug reports and pull requests are welcome ([`CONTRIBUTING.md`](CONTRIBUTING.md));
+report security problems privately as described in [`SECURITY.md`](SECURITY.md).
+
 ## Files
 | Path | Purpose |
 |---|---|
 | `Dockerfile`, `engine-entrypoint.sh`, `panel-entrypoint.sh` | the single image: engine and panel |
+| `tests/` | the 185-check regression suite and its runner |
 | `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
 | `k8s/shieldwaf.yaml` | hardened namespace, volume, pod, PostgreSQL StatefulSet, services, network policies |
 | `db/Dockerfile` | the PostgreSQL image (official, pinned, OS fixes, unused `gosu` removed) |

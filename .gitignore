@@ -8,3 +8,6 @@ secret.key
 bootstrap.code
 rendered/
 logs/
+
+# test runner output
+tests/.shieldwaf-test.yaml
