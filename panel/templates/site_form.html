@@ -21,6 +21,7 @@
     <div><label>Certificate source</label><select name="tls_source" id="tls_source">
       <option value="uploaded" {{ 'selected' if s.tls.source=='uploaded' }}>upload certificate + key</option>
       <option value="selfsigned" {{ 'selected' if s.tls.source=='selfsigned' }}>self-signed (testing only)</option>
+      <option value="acme" {{ 'selected' if s.tls.source=='acme' }}>Let's Encrypt (automatic, free)</option>
       <option value="mounted" {{ 'selected' if s.tls.source=='mounted' }}>mounted secret (cert-manager)</option>
       <option value="none" {{ 'selected' if s.tls.source=='none' }}>none</option></select></div>
     <div data-tls="mounted"><label>Mounted certificate name <small>/certs/&lt;name&gt;/tls.crt</small></label><input type="text" name="tls_mounted_name" value="{{ s.tls.mounted_name }}" placeholder="notes-tls"></div>
@@ -33,6 +34,11 @@
   <div data-tls="uploaded"><label>Certificate chain (PEM) <small>leave empty to keep the current one</small></label><textarea name="cert_pem" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
   <label>Private key (PEM, not password protected) <small>never shown again after saving</small></label><textarea name="key_pem" placeholder="-----BEGIN PRIVATE KEY-----" autocomplete="off"></textarea></div>
   <label class="chk" data-tls="selfsigned"><input type="checkbox" name="tls_generate"> Generate a new self-signed certificate on save</label>
+  <div data-tls="acme"><p class="hint">A free certificate is requested when you save and renewed automatically 30 days before it expires. Set your e-mail address first under
+    <a href="{{ url_for('settings') }}">Settings</a>. This host name must be public and reach this firewall on port 80.</p>
+    {% if s.tls.source == 'acme' and not new %}<p>Status: {% if s.tls.acme_state == 'issued' %}<span class="pill p-ok">certificate issued</span>{% elif s.tls.acme_state == 'error' %}<span class="pill p-err">failed</span>{% else %}<span class="pill p-warn">waiting for the certificate</span> (a temporary self-signed certificate is in use){% endif %}
+      {% if s.tls.acme_error %}<br><span class="hint">{{ s.tls.acme_error }}</span>{% endif %}</p>
+    <button class="btn sec sm" formaction="{{ url_for('site_acme', sid=s.id) }}" formmethod="post">Get / renew the certificate now</button>{% endif %}</div>
 </div>
 
 <div class="card" style="margin-top:14px">

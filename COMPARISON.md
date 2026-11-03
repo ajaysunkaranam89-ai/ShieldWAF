@@ -18,7 +18,7 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 | Auto-ban after repeated attacks | yes (GUI settings), tested | (?) | yes (bad behavior) |
 | Bot protection | **proof-of-work challenge** (signed pass bound to IP + browser) and scanner blocking | yes ("Anti-Bot" menu); likely more mature | yes (antibot challenges) |
 | Login / authentication gate | **yes** (user + password in front of a site) | yes ("Auth" menu) (?) | basic auth (free); OIDC/SAML/LDAP are Pro |
-| TLS / certificates | **yes**: upload, self-signed, cert-manager mount, TLS 1.2/1.3, HSTS, redirect (no built-in ACME renewal) | yes (certificate management) | yes (Let's Encrypt, custom certs) |
+| TLS / certificates | **yes**: upload, self-signed, cert-manager mount, TLS 1.2/1.3, HSTS, redirect and **automatic Let's Encrypt (ACME) certificates with renewal** | yes (certificate management) | yes (Let's Encrypt, custom certs) |
 | **Maintenance mode switch** | **yes: one click per site or all, free** | none seen in the console menu | **Pro only** (plugin exists, locked) |
 | **Automatic "service is down" page** | **yes, colourful, auto-reloads, editable in GUI** | generic error page (?) | generic page; custom page needs Pro or a custom config |
 | Edit visitor pages in the GUI | **yes, with live preview** | (?) | Pro only |
@@ -51,7 +51,7 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 - **Where SafeLine is better:** the detection engine (semantic analysis is harder to evade and gives fewer false positives than regex rules), a more mature anti-bot system, and a more polished console. Use it where you can run Docker Compose.
 - **Where BunkerWeb is better:** the largest free plugin list (automatic certificates, CrowdSec, country blocking) and years of production use.
 - **Where A Shield WAF is better for you:** it runs natively and hardened on your Kubernetes cluster with very little memory, and it gives you for free the things the other two lock or lack: **GUI maintenance switch, editable visitor pages, automatic service-down page, safe apply with rollback, rule exclusions in the GUI, two-factor admin login, audit trail, SSRF protection**.
-- **Honest gaps in A Shield WAF today:** no automatic certificate renewal (use cert-manager), no shared community threat signals (CrowdSec-style), the database as the one single point of failure, per-replica rate-limit counters, **no independent audit**, detection that is only partly pattern-free (the OWASP rules are pattern-based; the positive model, feeds, country rules, challenge and flood defence help), and no volumetric DDoS protection.
+- **Honest gaps in A Shield WAF today:** automatic certificates need a public name and port 80 and have no wildcards (use cert-manager for those), no shared community threat signals (CrowdSec-style), the database as the one single point of failure, per-replica rate-limit counters, **no independent audit**, detection that is only partly pattern-free (the OWASP rules are pattern-based; the positive model, feeds, country rules, challenge and flood defence help), and no volumetric DDoS protection.
 
 ## Feature score (the author's own 20-item checklist of practical WAF features)
 Verified here: **A Shield WAF 20 / 20 (100%)**, BunkerWeb free about 15 / 20, SafeLine not measurable on this cluster.

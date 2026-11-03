@@ -46,7 +46,9 @@ Keep `shieldwaf-panel` as ClusterIP. Reach it with `kubectl port-forward`, a VPN
 Settings, "Admin panel access" to your admin network, and enable two-factor login. To allow a namespace to reach port 9000, label it:
 `kubectl label namespace <ns> shieldwaf-admin=true`.
 
-## 5. Certificates with cert-manager
+## 5. Certificates: automatic (built in) or cert-manager
+**Simplest:** in the panel choose certificate source *Let's Encrypt (automatic, free)* for a site (see `USER-GUIDE.md`, "Automatic certificates"). Needs port 80 of your load balancer to reach the proxy (`80 -> 8080`, see section 3) and a public DNS name for the site. No wildcards.
+**Wildcards, or you already run cert-manager:** use cert-manager as follows.
 Ask cert-manager for a certificate per site, then mount the secrets so the WAF serves them (no keys are ever pasted into the GUI):
 ```yaml
 # 1) a Certificate in the shieldwaf namespace

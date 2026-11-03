@@ -1,0 +1,59 @@
+# Pebble (the official Let's Encrypt test server) and its test DNS server, for the automatic-certificate end-to-end test (tests/ha_test.py).
+# Lives in the namespace "shieldwaf-demo" (throw-away). Pebble checks the HTTP challenge on port 8080 (the firewall's proxy port) and
+# the DNS server answers every name with the firewall's address, which ha_test.py sets after the firewall is up.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: pebble-config, namespace: shieldwaf-demo}
+data:
+  pebble-config.json: |
+    {"pebble": {"listenAddress": "0.0.0.0:14000", "managementListenAddress": "0.0.0.0:15000",
+      "certificate": "test/certs/localhost/cert.pem", "privateKey": "test/certs/localhost/key.pem",
+      "httpPort": 8080, "tlsPort": 5001, "ocspResponderURL": "", "externalAccountBindingRequired": false}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: pebble, namespace: shieldwaf-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: pebble}}
+  template:
+    metadata: {labels: {app: pebble}}
+    spec:
+      containers:
+        - name: pebble
+          image: ghcr.io/letsencrypt/pebble:latest
+          args: ["-config", "/cfg/pebble-config.json", "-dnsserver", "challtest:8053"]
+          env:
+            - {name: PEBBLE_VA_NOSLEEP, value: "1"}
+          ports: [{containerPort: 14000}]
+          volumeMounts: [{name: cfg, mountPath: /cfg}]
+      volumes: [{name: cfg, configMap: {name: pebble-config}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: pebble, namespace: shieldwaf-demo}
+spec:
+  selector: {app: pebble}
+  ports: [{port: 14000, targetPort: 14000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: challtest, namespace: shieldwaf-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: challtest}}
+  template:
+    metadata: {labels: {app: challtest}}
+    spec:
+      containers:
+        - name: challtest
+          image: ghcr.io/letsencrypt/pebble-challtestsrv:latest
+          args: ["-defaultIPv4", "10.96.0.1", "-defaultIPv6", ""]
+          ports: [{containerPort: 8053, protocol: UDP}, {containerPort: 8055}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: challtest, namespace: shieldwaf-demo}
+spec:
+  selector: {app: challtest}
+  ports: [{name: dns-udp, port: 8053, protocol: UDP, targetPort: 8053}, {name: dns-tcp, port: 8053, protocol: TCP, targetPort: 8053}, {name: api, port: 8055, targetPort: 8055}]

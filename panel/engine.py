@@ -222,11 +222,16 @@ def _modsec_dedicated(site):
     return "\n".join(lines) + "\n"
 
 
+ACME_LOCATION = "location ^~ /.well-known/acme-challenge/ { alias " + os.path.join(DATA, "acme") + "/; default_type text/plain; modsecurity off; }"
+
+
 def _common(site, gen, feed_on, layout="legacy"):
     """Directives shared by the HTTP and HTTPS server of a site (access control, headers, WAF, maintenance / proxy)."""
     sid = site["id"]
     pdir = f"{gen}/pages/{sid}"
     L = [f"  client_max_body_size {int(site['max_body_mb'])}m;", "  limit_conn perip 300;", f"  include {gen}/bans.conf;"]
+    if site["tls"]["source"] == "acme":
+        L.append("  " + ACME_LOCATION)               # the certificate authority fetches its answer here (any replica can answer)
     if feed_on:
         L.append("  if ($shield_feed) { return 403; }")                 # listed on a threat-intelligence feed
     g = site["geo"]
@@ -311,7 +316,8 @@ def _server(site, gen, feed_on, layout="legacy"):
     https_listen = [f"  listen {TLS_PORT} ssl;", "  http2 on;"]
     if t["redirect_http"]:
         port = f":{t['redirect_port']}" if t["redirect_port"] and t["redirect_port"] != "443" else ""
-        redir = (f"server {{\n  listen {HTTP_PORT};\n  server_name {host};\n  include {gen}/bans.conf;\n"
+        acme_loc = ("  " + ACME_LOCATION + "\n") if t["source"] == "acme" else ""
+        redir = (f"server {{\n  listen {HTTP_PORT};\n  server_name {host};\n  include {gen}/bans.conf;\n{acme_loc}"
                  f"  location / {{ return 301 https://$host{port}$request_uri; }}\n}}\n")
     else:
         redir = ""

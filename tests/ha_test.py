@@ -172,6 +172,37 @@ def leader_name():
 
 
 # =============================================================================================== 0. three replicas
+import os
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def sh(*args, timeout=180, inp=None):
+    return subprocess.run(list(args), capture_output=True, text=True, timeout=timeout, input=inp)
+
+
+print("== preparing the ACME test server (Pebble)", flush=True)
+sh("kubectl", "apply", "-f", os.path.join(HERE, "pebble.yaml"))
+cid = sh("docker", "create", "ghcr.io/letsencrypt/pebble:latest").stdout.strip()
+ca_file = os.path.join(HERE, ".pebble-ca.pem")
+sh("docker", "cp", f"{cid}:/test/certs/pebble.minica.pem", ca_file)
+sh("docker", "rm", cid)
+sh("kubectl", "-n", NS, "delete", "configmap", "acme-ca", "--ignore-not-found")
+sh("kubectl", "-n", NS, "create", "configmap", "acme-ca", f"--from-file=ca.pem={ca_file}")
+os.remove(ca_file)
+sh("kubectl", "-n", NS, "apply", "-f", "-", inp="apiVersion: v1\nkind: Service\nmetadata: {name: pebble}\nspec: {type: ExternalName, externalName: pebble.shieldwaf-demo.svc.cluster.local}\n")
+patch_ops = [
+    {"op": "add", "path": "/spec/template/spec/containers/1/env/-", "value": {"name": "SHIELD_ACME_TEST_CA", "value": "/acme-ca/ca.pem"}},
+    {"op": "add", "path": "/spec/template/spec/containers/1/env/-", "value": {"name": "SHIELD_ACME_ALLOW_PRIVATE", "value": "1"}},
+    {"op": "add", "path": "/spec/template/spec/containers/1/volumeMounts/-", "value": {"name": "acme-ca", "mountPath": "/acme-ca", "readOnly": True}},
+    {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "acme-ca", "configMap": {"name": "acme-ca"}}}]
+sh("kubectl", "-n", NS, "patch", "deploy/shieldwaf-test", "--type", "json", "-p", json.dumps(patch_ops))
+proxy_ip = kube("get", "svc", "shieldwaf-proxy", "-o", "jsonpath={.spec.clusterIP}").strip()
+sh("kubectl", "-n", DEMO_NS, "patch", "deploy/challtest", "--type", "json", "-p",
+   json.dumps([{"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["-defaultIPv4", proxy_ip, "-defaultIPv6", ""]}]))
+sh("kubectl", "-n", NS, "rollout", "status", "deploy/shieldwaf-test", "--timeout=240s", timeout=260)
+sh("kubectl", "-n", DEMO_NS, "rollout", "status", "deploy/challtest", "--timeout=120s", timeout=140)
+sh("kubectl", "-n", DEMO_NS, "rollout", "status", "deploy/pebble", "--timeout=180s", timeout=200)
+
 print("== waiting for 3 replicas", flush=True)
 kube("scale", "deploy/shieldwaf-test", "--replicas=3")
 ps = wait_pods(3)
@@ -203,7 +234,7 @@ s, html = B.req("/dashboard")
 check("a session started on replica 1 is valid on replica 2 (shared sessions and key)", "Requests" in html, html[:100])
 s, html = B.req("/cluster")
 names = re.findall(r'<td class="mono">(shieldwaf-test-[a-z0-9-]+)', html)
-check("Cluster page lists all three replicas", len(set(names)) == 3, str(set(names)))
+check("Cluster page lists all three running replicas (replicas that stopped earlier stay listed as offline for a day)", {p_[0] for p_ in ps} <= set(names), str(set(names)))
 check("exactly one replica is the leader", len(leader_name()) == 1 and html.count('p-ok">leader') == 1, str(leader_name()))
 for c in A.jar:
     C.jar.set_cookie(c)
@@ -328,6 +359,89 @@ s, html = A.post("/sites/new", site_form("tls2.ha.test", tls_enabled="on", tls_s
 time.sleep(2)
 fp = {t.pod: cert_fp(t, "tls2.ha.test") for t in tl}
 check("TLS site added after the import: all replicas serve the same certificate", len(set(fp.values())) == 1 and "" not in fp.values(), str(fp))
+
+# =============================================================================================== 3b. automatic certificates (ACME)
+print("== automatic certificates (Pebble)", flush=True)
+
+
+def https_status(t, host):
+    try:
+        with socket.create_connection(("127.0.0.1", t.tls), timeout=8) as sk, CTX.wrap_socket(sk, server_hostname=host) as ss:
+            ss.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+            return int(ss.recv(64).split()[1])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+settings_form = {"ab_threshold": "10", "ab_window": "5", "ab_ban": "30", "retention": "7", "idle": "30", "trusted_proxies": "", "never_ban": "127.0.0.1",
+                 "panel_allow_ips": "", "upstream_allow": "", "dd_rps": "200", "dd_window": "20", "dd_hold": "15", "acme_form": "1"}
+s, html = A.post("/sites/new", site_form("early.ha.test", tls_enabled="on", tls_source="acme"), "/sites/new")
+check("a site with an automatic certificate is refused until the e-mail address and terms are set", "Automatic certificates" in html and "site added" not in html,
+      re.sub(r"<[^>]+>", " ", html)[250:400])
+s, html = A.post("/settings", {**settings_form, "acme_email": "not-an-email", "acme_directory": "https://pebble:14000/dir", "acme_agreed": "on"}, "/settings")
+check("a bad e-mail address is refused", "Invalid settings" in html)
+s, html = A.post("/settings", {**settings_form, "acme_email": "admin@example.test", "acme_directory": "http://pebble:14000/dir", "acme_agreed": "on"}, "/settings")
+check("a plain-http certificate authority address is refused", "Invalid settings" in html and "https" in html)
+s, html = A.post("/settings", {**settings_form, "acme_email": "admin@example.test", "acme_directory": "https://pebble:14000/dir", "acme_agreed": "on"}, "/settings")
+check("e-mail, authority and terms are saved", "settings saved" in html, re.sub(r"<[^>]+>", " ", html)[200:350])
+s, html = A.post("/sites/new", site_form("acme.ha.test", tls_enabled="on", tls_source="acme", tls_redirect="on", tls_hsts="on"), "/sites/new")
+check("site with an automatic certificate is added", "site added" in html, re.sub(r"<[^>]+>", " ", html)[250:420])
+ids2 = {}
+for m in re.finditer(r"<td><b>([\w.*-]+)</b>.*?/sites/(s[0-9a-f]+)\"", A.req("/sites")[1], re.S):
+    ids2.setdefault(m.group(1), m.group(2))
+acme_sid = ids2.get("acme.ha.test", "x")
+fp_before = cert_fp(tl[0], "acme.ha.test")
+t0 = time.time()
+fps = {}
+for _ in range(60):
+    fps = {t.pod: cert_fp(t, "acme.ha.test") for t in tl}
+    if len(set(fps.values())) == 1 and "" not in fps.values() and fp_before not in fps.values():
+        break
+    time.sleep(3)
+check("the certificate arrives and ALL replicas serve the same new one (took %.0f s)" % (time.time() - t0), len(set(fps.values())) == 1 and "" not in fps.values() and fp_before not in fps.values(), str(fps))
+issuers = {p_[0]: kube("exec", p_[0], "-c", "panel", "--", "openssl", "x509", "-noout", "-issuer", "-in", f"/data/certs/{acme_sid}/fullchain.pem") for p_ in ps}
+check("it was issued by the certificate authority (Pebble), not self-signed", all("Pebble" in v for v in issuers.values()), str(issuers))
+check("the site is served over HTTPS with the new certificate on every replica", all(https_status(t, "acme.ha.test") == 200 for t in tl))
+check("the site page shows the certificate as issued", "certificate issued" in A.req(f"/sites/{acme_sid}")[1])
+import http.client
+
+
+def raw_status(t, host, path="/"):
+    """Status without following redirects."""
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", t.http, timeout=8)
+        c.request("GET", path, headers={"Host": host})
+        return c.getresponse().status
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+check("the HTTP side redirects to HTTPS (and still answers the authority on the challenge path)", all(raw_status(t, "acme.ha.test") == 301 for t in tl))
+# the challenge answer must be served by every replica, whichever one publishes it
+tok = "ha_test_token_" + secrets.token_hex(8)
+kube("exec", tl[0].pod, "-c", "panel", "--", "python3", "-c",
+     f"import os, acme, sharedfs; os.makedirs(acme.CHALLENGE_DIR, exist_ok=True); open(acme.CHALLENGE_DIR + '/{tok}', 'w').write('answer-{tok}'); sharedfs.publish('acme')")
+got = {}
+for _ in range(20):
+    got = {}
+    for t in tl:
+        try:
+            got[t.pod] = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{t.http}/.well-known/acme-challenge/{tok}", headers={"Host": "acme.ha.test"}), timeout=8).read().decode()
+        except Exception as e:  # noqa: BLE001
+            got[t.pod] = str(e)
+    if all(v == f"answer-{tok}" for v in got.values()):
+        break
+    time.sleep(1)
+check("a challenge answer published on one replica is served by all replicas", all(v == f"answer-{tok}" for v in got.values()), str(got))
+other = urllib.request.Request(f"http://127.0.0.1:{tl[1].http}/.well-known/acme-challenge/{tok}", headers={"Host": "ha1.test"})
+try:
+    body = urllib.request.urlopen(other, timeout=8).read().decode()
+except urllib.error.HTTPError:
+    body = ""
+check("sites without an automatic certificate do not expose the challenge folder", body != f"answer-{tok}")
+kube("exec", tl[0].pod, "-c", "panel", "--", "python3", "-c", f"import acme; acme._unpublish('{tok}')")
+time.sleep(3)
+check("the challenge answer is removed again everywhere", all(px(t, "acme.ha.test", f"/.well-known/acme-challenge/{tok}") != 200 for t in tl))
 
 # =============================================================================================== 4. a replica dies
 print("== killing the leader replica", flush=True)

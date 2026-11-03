@@ -76,6 +76,12 @@ database cannot plant files on a replica (forged rows fail authentication; only 
 secret can read the shared files, so protect them separately (RBAC on the secret, encrypted database volume). The key cannot be rotated from the GUI yet: to rotate it, create a new key, restart all replicas, and re-upload the certificates.
 Administrator actions are serialised across replicas with a database lock (no lost updates, a 2FA or recovery code can never be used twice), and the replicas only ever talk to the database, never to each other.
 
+### Automatic certificates (ACME)
+The ACME client (`panel/acme.py`, RFC 8555) only talks to the authority address you chose in Settings: it must be https and, outside tests, must resolve to public addresses only (no request into the cluster);
+every address the authority returns must be on the same host; the issued certificate is checked (right name, valid now, matches the freshly generated key) before it is used; the account key is created once, kept
+encrypted in the shared store and never shown; the challenge answers are public by design and are served from a read-only folder. Failed orders are retried at most every 6 hours. Anyone who can change the sites in
+the panel can order certificates for host names they enter, so keep the admin roles tight (viewers cannot).
+
 ## What it does NOT do (be honest with your auditors)
 - It is **not a certified or independently audited product.** An independent audit can only be done by someone other than the author. What exists is a documented **self-review** (`docs/SECURITY-REVIEW.md`: static analysis, manifest and image scans, a web-scanner baseline, 192 automated attack and abuse tests, all fixed or explained) and a CI workflow that repeats the scans. Commission a third-party penetration test and code review before relying on it for regulated or high-value systems.
 - The OWASP rule set is pattern-based, so a determined attacker may find bypasses that a commercial semantic engine catches. This is reduced, not removed: the positive security model, reputation feeds, country rules, the anti-bot challenge and flood defence do not depend on attack patterns. Run new sites in detect mode first, tune, then block, and keep your applications patched: a WAF reduces risk, it does not fix vulnerable code.
@@ -84,7 +90,7 @@ Administrator actions are serialised across replicas with a database lock (no lo
 - No FIPS-validated cryptography and no hardware key (WebAuthn) support; two-factor is TOTP.
 - The anti-bot challenge stops simple bots and scripts that cannot run JavaScript; it is not a defence against attackers driving real browsers.
 - Login-gate passwords use SHA-512 crypt (strong, slow) but the gate is basic authentication; use it over HTTPS only.
-- Certificates are not auto-renewed by the product. Use cert-manager and mount the secret (see `docs/CLOUD.md`).
+- Automatic certificates (ACME, HTTP-01) need a public host name and port 80 and do not support wildcards; use cert-manager for those (`docs/CLOUD.md`). The ACME client was tested against Pebble, the official test server, not against the real Let's Encrypt.
 
 ## What you must do
 1. Create the admin account yourself, choose a strong password and **enable two-factor login immediately**.

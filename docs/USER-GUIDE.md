@@ -31,8 +31,19 @@ If the application stops, visitors see a friendly page that reloads itself every
 In the site's **TLS / HTTPS** section tick *Serve this site over HTTPS* and choose where the certificate comes from:
 - **upload certificate + key:** paste a PEM chain and a PEM private key (not password protected). The key is never shown again.
 - **self-signed:** for testing only (browsers will warn).
-- **mounted secret:** a certificate that cert-manager keeps renewed (see `CLOUD.md`). Recommended in production.
+- **Let's Encrypt (automatic, free):** the firewall gets the certificate by itself and renews it 30 days before it expires. See "Automatic certificates" below.
+- **mounted secret:** a certificate that cert-manager keeps renewed (see `CLOUD.md`). Recommended for wildcard names and when you already run cert-manager.
 HSTS and an HTTP to HTTPS redirect are options. TLS 1.2 and 1.3 only.
+
+### Automatic certificates (Let's Encrypt)
+1. Go to **Settings, Automatic HTTPS certificates**. Enter a contact e-mail address (the authority warns you there if a renewal ever fails), choose **Let's Encrypt (production)**, tick the box to accept the authority's agreement, and save.
+   Tip: first try **Let's Encrypt staging** with one site (its certificates are not trusted by browsers, but the limits are generous).
+2. In the site, tick *Serve this site over HTTPS*, choose certificate source **Let's Encrypt (automatic, free)**, and save. A temporary self-signed certificate is used for the first seconds, then the real one replaces it; the site page shows *certificate issued*. Use **Get / renew the certificate now** to retry.
+3. Renewal is automatic: the leader replica checks every hour and renews 30 days before expiry. If a renewal fails you get an alert (if you set up alert channels) and the page shows the reason.
+
+What you need: the host name must be **public** (a real DNS name that points to this firewall) and **port 80 must reach the firewall from the internet** (the authority checks `http://your-host/.well-known/acme-challenge/...`; the firewall answers that on any replica).
+What does not work: wildcard names (`*.example.com`) and IP addresses (use cert-manager or an upload for those), and sites that block the authority: a **country rule**, an **IP allow-list** or a **login gate** in front of the challenge address can make the check fail (the authority validates from several places in the world). Failed checks are retried at most every 6 hours because authorities limit failures.
+The certificate and its private key are shared between the replicas, encrypted, through the database.
 
 ### Anti-bot challenge
 Tick *Require the challenge*. Browsers solve a small puzzle once (a second or less) and receive a signed pass; scripts that cannot run JavaScript are stopped.

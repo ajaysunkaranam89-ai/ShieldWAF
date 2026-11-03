@@ -5,7 +5,8 @@
 #
 # Needs: kubectl (pointing at a test cluster), python 3.9+, curl, openssl, sed. The images shieldwaf:2.3 and shieldwaf-db:16 must already
 # be on the cluster (see docs/INSTALL.md). The pods need outbound internet (GitHub, threat feeds, the registries' country files).
-# SUITES=functional runs only the 192-check suite (default: both suites).
+# SUITES=functional runs only the functional suite, SUITES=ha only the high-availability suite (default: both). The high-availability suite also needs
+# docker (it fetches the test CA of Pebble) and internet access to pull ghcr.io/letsencrypt/pebble images.
 # Careful: the namespaces "shieldwaf-test", "sink-test" and "shieldwaf-demo" are deleted and recreated. Nothing else is touched.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
@@ -32,6 +33,13 @@ kubectl delete namespace sink-test shieldwaf-demo --wait=false >/dev/null 2>&1
 for ns in sink-test shieldwaf-demo; do kubectl -n "$ns" delete pod --all --force --grace-period=0 >/dev/null 2>&1; done
 kubectl wait --for=delete namespace/sink-test namespace/shieldwaf-demo --timeout=120s >/dev/null 2>&1
 kubectl apply -f "$HERE/demo-apps.yaml" -f "$HERE/sink.yaml" >/dev/null
+
+if [ "${SUITES:-all}" = "ha" ]; then
+  echo "== deploying a test copy of A Shield WAF (high-availability suite only)"
+  deploy_waf
+  "$PY" -u "$HERE/ha_test.py"
+  exit $?
+fi
 
 echo "== deploying a test copy of A Shield WAF (2 replicas)"
 deploy_waf

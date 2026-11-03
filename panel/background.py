@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime
 
+import acme
 import alerts
 import cluster
 import crsupdate
@@ -299,6 +300,59 @@ def cert_tick():
 
 
 
+def acme_issue(sid, force=False):
+    """Get a certificate for one site with an automatic (ACME) certificate and install it on every replica."""
+    cfg = store.load()
+    s = next((x for x in cfg["sites"] if x["id"] == sid), None)
+    if not s or not (s["tls"]["enabled"] and s["tls"]["source"] == "acme"):
+        return
+    now = time.time()
+    if not force and now - float(store.meta_get(f"acme_try:{sid}", 0)) < acme.RETRY_S:        # authorities rate-limit failures: not more than every 6 hours
+        return
+    if now - float(store.meta_get(f"acme_busy:{sid}", 0)) < 600:                           # another request for this site is already running
+        return
+    store.meta_set(f"acme_busy:{sid}", now)
+    store.meta_set(f"acme_try:{sid}", now)
+    ac, host, err, exp = cfg["settings"]["acme"], s["host"], "", 0
+    try:
+        chain, key, exp = acme.obtain(host, ac["email"], ac["directory"])
+        acme.install(sid, chain, key)
+    except Exception as e:  # noqa: BLE001
+        err = (str(e) if isinstance(e, acme.AcmeError) else f"{type(e).__name__}: {e}")[:300]
+    finally:
+        store.meta_set(f"acme_busy:{sid}", 0)
+    with store._lock:
+        cfg = store.load()
+        s = next((x for x in cfg["sites"] if x["id"] == sid), None)
+        if not s:
+            return
+        if err:
+            s["tls"].update(acme_state="error", acme_error=err)
+        else:
+            s["tls"].update(acme_state="issued", acme_error="", acme_expires=exp)
+            if _applier:
+                _applier(cfg)                       # nginx reloads and starts using the new certificate
+        store.save(cfg)
+    store.audit("system", "certificate issued" if not err else "certificate request failed", f"{host} {err}"[:200])
+    if err:
+        alerts.notify("config_failed", f"Certificate request failed: {host}", err, key="acme:" + sid)
+
+
+def acme_issue_async(sid, force=False):
+    threading.Thread(target=acme_issue, args=(sid, force), daemon=True, name="acme-" + sid).start()
+
+
+def acme_tick():
+    """Leader, hourly: request certificates that are missing or expire within 30 days."""
+    for s in store.load()["sites"]:
+        t = s["tls"]
+        if not (t["enabled"] and t["source"] == "acme"):
+            continue
+        ci = security.cert_info(security.cert_paths(s)[0])
+        if t.get("acme_state") != "issued" or not ci or (ci["days_left"] is not None and ci["days_left"] < acme.RENEW_DAYS):
+            acme_issue(s["id"])
+
+
 def _ver(v):
     try:
         return tuple(int(x) for x in v.split("."))
@@ -380,6 +434,6 @@ def start(applier):
     alerts.start()
     # every replica: its own logs, its own engine, local clean-up. Leader only: everything that must happen once for the whole cluster.
     local = ((ingest_access, 2), (ingest_audit, 2), (prune, 3600), (health_tick, 5))
-    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900))
+    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600))
     for fn, every in local + tuple((cluster.leader_only(f), e) for f, e in once):
         threading.Thread(target=_loop, args=(fn, every), daemon=True, name=fn.__name__).start()

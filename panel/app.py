@@ -17,6 +17,7 @@ from datetime import datetime
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import acme
 import alerts
 import background
 import charts
@@ -278,10 +279,16 @@ def validate_site(s, cfg):
     if not ms or any(m not in ALL_METHODS for m in ms):
         return "Allowed methods must be from: " + " ".join(ALL_METHODS)
     t = s["tls"]
-    if t["source"] not in ("none", "uploaded", "selfsigned", "mounted") or not (1 <= int(t["hsts_days"]) <= 730):
+    if t["source"] not in ("none", "uploaded", "selfsigned", "mounted", "acme") or not (1 <= int(t["hsts_days"]) <= 730):
         return "Invalid TLS settings."
     if t["enabled"] and t["source"] == "none":
-        return "TLS is enabled: choose a certificate source (upload, self-signed or mounted)."
+        return "TLS is enabled: choose a certificate source (upload, self-signed, mounted or Let's Encrypt)."
+    if t["enabled"] and t["source"] == "acme":
+        if not acme.valid_host(s["host"]):
+            return "Automatic certificates need a public host name like app.example.com (no wildcard, no IP address)."
+        ac = cfg["settings"].get("acme", {})
+        if not ac.get("agreed") or not EMAIL_RE.match(ac.get("email", "")):
+            return "Automatic certificates: open Settings, section 'Automatic HTTPS certificates', enter your e-mail address and accept the terms first."
     if t["redirect_port"] and not re.fullmatch(r"\d{2,5}", str(t["redirect_port"])):
         return "Redirect port must be a number."
     if t["source"] == "mounted" and not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,62}", t.get("mounted_name", "")):
@@ -356,7 +363,9 @@ def parse_site(form, cfg, existing=None):
             "tls": {"enabled": bool(form.get("tls_enabled")), "source": form.get("tls_source", "none"),
                     "redirect_http": bool(form.get("tls_redirect")), "redirect_port": form.get("tls_redirect_port", "").strip(),
                     "hsts": bool(form.get("tls_hsts")), "hsts_days": int(form.get("tls_hsts_days", 365) or 365),
-                    "mounted_name": form.get("tls_mounted_name", "").strip().lower()},
+                    "mounted_name": form.get("tls_mounted_name", "").strip().lower(),
+                    "acme_state": (existing or {}).get("tls", {}).get("acme_state", ""), "acme_error": (existing or {}).get("tls", {}).get("acme_error", ""),
+                    "acme_expires": (existing or {}).get("tls", {}).get("acme_expires", 0)},
             "auth": {"enabled": bool(form.get("auth_enabled")), "realm": form.get("auth_realm", "Restricted").strip(), "users": auth_users},
             "challenge": {"enabled": bool(form.get("chal_enabled")), "difficulty": int(form.get("chal_difficulty", 4)),
                           "ttl_hours": int(form.get("chal_ttl", 12)), "scope": form.get("chal_scope", "pages"),
@@ -382,6 +391,10 @@ def handle_certs(s, form):
     if not t["enabled"]:
         return None
     if t["source"] == "selfsigned" and (form.get("tls_generate") or not os.path.exists(security.cert_paths(s)[0])):
+        return security.make_selfsigned(s["id"], s["host"])
+    if t["source"] == "acme" and not os.path.exists(security.cert_paths(s)[0]):
+        # nginx needs some certificate to start serving the site (and to answer the authority on port 80): a self-signed placeholder is replaced as soon as the real one arrives
+        s["tls"]["acme_state"], s["tls"]["acme_error"] = "pending", ""
         return security.make_selfsigned(s["id"], s["host"])
     if t["source"] == "uploaded" and (form.get("cert_pem", "").strip() or form.get("key_pem", "").strip()):
         return security.install_pair(s["id"], form.get("cert_pem", ""), form.get("key_pem", ""))
@@ -712,6 +725,8 @@ def site_new():
                 return _form(s, True, cfg)
             cfg["sites"].append(s)
             if apply_cfg(cfg, "site added", s["host"]):
+                if s["tls"]["enabled"] and s["tls"]["source"] == "acme":
+                    background.acme_issue_async(s["id"], force=True)
                 return redirect(url_for("sites"))
             return _form(s, True, cfg)
         s = json.loads(json.dumps(store.DEFAULT_SITE))
@@ -734,9 +749,29 @@ def site_edit(sid):
                 return _form(s, False, cfg)
             cfg["sites"] = [s if x["id"] == sid else x for x in cfg["sites"]]
             if apply_cfg(cfg, "site updated", s["host"]):
+                if s["tls"]["enabled"] and s["tls"]["source"] == "acme" and (s["tls"].get("acme_state") in ("", "pending", "error") or form_wants_acme(request.form)):
+                    background.acme_issue_async(s["id"], force=True)
                 return redirect(url_for("sites"))
             return _form(s, False, cfg)
         return _form(cur, False, cfg)
+
+
+def form_wants_acme(form):
+    return bool(form.get("acme_now"))
+
+
+@app.route("/sites/<sid>/acme", methods=["POST"])
+def site_acme(sid):
+    """Get (or renew) the automatic certificate of one site right now."""
+    cfg = store.load()
+    s = site_by_id(cfg, sid) or abort(404)
+    if not (s["tls"]["enabled"] and s["tls"]["source"] == "acme"):
+        flash("This site does not use automatic certificates.", "err")
+    else:
+        background.acme_issue_async(sid, force=True)
+        store.audit(me(), "certificate requested", s["host"], client_ip())
+        flash(f"Requesting a certificate for {s['host']} ... this takes about half a minute; reload this page to see the result.", "ok")
+    return redirect(url_for("site_edit", sid=sid))
 
 
 @app.route("/sites/<sid>/delete", methods=["POST"])
@@ -931,6 +966,16 @@ def settings():
                 raise ValueError("flood defence values out of range")
             st.update({"autoban": ab, "retention_days": ret, "trusted_proxies": tp, "never_ban": nb, "panel_allow_ips": pa,
                        "upstream_allow": ua, "session_idle_min": idle, "ddos": dd})
+            if "acme_form" in request.form:            # the automatic-certificate section (older forms do not send it)
+                em, di = request.form.get("acme_email", "").strip(), request.form.get("acme_directory", "").strip()
+                if em and not EMAIL_RE.match(em):
+                    flash("Invalid settings: the e-mail address for certificates does not look right.", "err")
+                    return redirect(url_for("settings"))
+                derr = acme.check_directory(di) if di else "Choose a certificate authority."
+                if derr:
+                    flash(f"Invalid settings: {derr}", "err")
+                    return redirect(url_for("settings"))
+                st["acme"] = {"email": em, "directory": di, "agreed": bool(request.form.get("acme_agreed")) and bool(em)}
             apply_cfg(cfg, "settings saved")
             return redirect(url_for("settings"))
         return render_template("settings.html", st=st, users=list(cfg["users"]))

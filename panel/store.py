@@ -86,6 +86,8 @@ DEFAULT_SETTINGS = {
     # OWASP rule-set updates (see crsupdate.py): "baked" = the version inside the image
     "crs": {"active": "baked", "previous": "", "staged": "", "staged_sha256": "", "staged_at": 0, "latest": "", "checked_at": 0,
             "error": "", "auto_stage": True},
+    # automatic HTTPS certificates (ACME / Let's Encrypt), see acme.py
+    "acme": {"email": "", "directory": "https://acme-v02.api.letsencrypt.org/directory", "agreed": False},
     # layer-7 DoS defence: automatic "under attack" mode when one site receives too many requests per second
     "ddos": {"auto": False, "rps_threshold": 200, "window_s": 20, "hold_min": 15},
 }
@@ -103,7 +105,8 @@ DEFAULT_SITE = {
     "max_body_mb": 10,
     "methods": "GET HEAD POST PUT DELETE PATCH OPTIONS",
     "tls": {"enabled": False, "source": "none",       # none | uploaded | selfsigned | mounted
-            "redirect_http": True, "redirect_port": "", "hsts": True, "hsts_days": 365, "mounted_name": ""},
+            "redirect_http": True, "redirect_port": "", "hsts": True, "hsts_days": 365, "mounted_name": "",
+            "acme_state": "", "acme_error": "", "acme_expires": 0},          # acme_state: "" | pending | issued | error
     "auth": {"enabled": False, "realm": "Restricted", "users": {}},      # users: name -> crypt hash (never shown)
     "challenge": {"enabled": False, "difficulty": 4, "ttl_hours": 12, "scope": "pages", "exclude_paths": ""},
     "positive": {"enabled": False, "paths": "", "content_types": "application/json application/x-www-form-urlencoded multipart/form-data text/plain",

@@ -27,6 +27,17 @@
 <div class="card" style="margin-top:14px"><b>Real client IP</b>
   <p class="hint">If A Shield WAF sits behind a cloud load balancer or CDN, list that proxy's CIDRs here so the real client IP is read from X-Forwarded-For. Leave empty when clients connect directly: a spoofed header is then ignored.</p>
   <textarea name="trusted_proxies" placeholder="10.0.0.0/8">{{ st.trusted_proxies }}</textarea></div>
+<div class="card" style="margin-top:14px"><b>Automatic HTTPS certificates (Let's Encrypt)</b>
+  <p class="hint">Sites whose certificate source is <i>Let's Encrypt (automatic)</i> get a free certificate and renewals 30 days before it expires. Needs: a public host name that points to this firewall, and port 80 reachable from the internet (the authority checks
+  <span class="mono">http://your-host/.well-known/acme-challenge/...</span>). Wildcard names are not supported. Country rules or IP allow-lists on the site can block the authority's check.</p>
+  <input type="hidden" name="acme_form" value="1">
+  <div class="row"><div><label>Contact e-mail <small>(the authority warns you here if a renewal fails)</small></label><input type="text" name="acme_email" value="{{ st.acme.email }}" placeholder="you@example.com"></div>
+  <div><label>Certificate authority</label><select name="acme_directory">
+    <option value="https://acme-v02.api.letsencrypt.org/directory" {{ 'selected' if st.acme.directory == 'https://acme-v02.api.letsencrypt.org/directory' }}>Let's Encrypt (production)</option>
+    <option value="https://acme-staging-v02.api.letsencrypt.org/directory" {{ 'selected' if st.acme.directory == 'https://acme-staging-v02.api.letsencrypt.org/directory' }}>Let's Encrypt staging (testing: browsers do not trust it)</option>
+    {% if st.acme.directory not in ['https://acme-v02.api.letsencrypt.org/directory', 'https://acme-staging-v02.api.letsencrypt.org/directory'] %}<option value="{{ st.acme.directory }}" selected>{{ st.acme.directory }}</option>{% endif %}
+  </select></div></div>
+  <label class="chk"><input type="checkbox" name="acme_agreed" {{ 'checked' if st.acme.agreed }}> I accept the certificate authority's subscriber agreement (see letsencrypt.org/repository)</label></div>
 <div class="card" style="margin-top:14px"><b>Data retention</b>
   <div class="row"><div><label>Keep logs and events (days)</label><input type="number" name="retention" min="1" max="365" value="{{ st.retention_days }}"></div></div></div>
 <p style="margin-top:14px"><button class="btn">Save settings</button></p></form>

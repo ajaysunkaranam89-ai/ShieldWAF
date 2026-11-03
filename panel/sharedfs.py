@@ -30,7 +30,7 @@ if KEY and store.PG:
 
 # The only things that may be shared: single files and directories (trees).
 _FILES = re.compile(r"^(secret\.key|challenge\.key|bootstrap\.code|feeds/feed\.geo|secrets/[A-Za-z0-9_-]{1,64}\.json)$")
-_TREES = re.compile(r"^(geo|certs/[A-Za-z0-9_-]{1,64}|crs/v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})$")
+_TREES = re.compile(r"^(geo|acme|certs/[A-Za-z0-9_-]{1,64}|crs/v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})$")
 _PRIVATE = re.compile(r"^(secret\.key|challenge\.key|bootstrap\.code|secrets/|certs/)")
 MAX_UNIT = 40 * 1024 * 1024
 MAX_FILES = 3000

@@ -99,7 +99,7 @@ def _run(cmd, **kw):
 def cert_paths(site):
     """(cert_file, key_file) for a site according to its TLS settings, or (None, None)."""
     t = site["tls"]
-    if t["source"] in ("uploaded", "selfsigned"):
+    if t["source"] in ("uploaded", "selfsigned", "acme"):
         d = os.path.join(CERT_DIR, site["id"])
         return os.path.join(d, "fullchain.pem"), os.path.join(d, "privkey.pem")
     if t["source"] == "mounted" and re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,62}", t.get("mounted_name", "")):

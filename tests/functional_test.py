@@ -172,8 +172,11 @@ s, html, _ = P.req("/login/2fa", {"_csrf": P.token(html), "code": "123456"})
 check("wrong 2FA code refused", "Wrong code" in html)
 step = int(time.time() // 30)
 good = totp(secret, step)
-s, html, _ = P.req("/login/2fa", {"_csrf": P.token(html), "code": totp(secret, step + 1)})
-good = totp(secret, step + 1)
+for _off in (1, 2, 0):          # the cluster's clock can differ from this computer's by a few seconds: try the neighbouring 30-second steps
+    s, html, _ = P.req("/login/2fa", {"_csrf": P.token(html), "code": totp(secret, step + _off)})
+    good = totp(secret, step + _off)
+    if "Dashboard" in html:
+        break
 check("correct 2FA code logs in", "Dashboard" in html and "Two-factor login is not enabled" not in html, html[:0])
 P.post("/logout", {})
 s, html, _ = P.req("/login")
