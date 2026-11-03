@@ -1,0 +1,111 @@
+# ShieldWAF on Kubernetes: one pod = engine (nginx+ModSecurity+OWASP CRS) + panel (GUI), sharing a data volume.
+# Build and load the image first (see README): docker build -t shieldwaf:1.0 . ; kind load docker-image shieldwaf:1.0 --name mycluster
+# No secrets are stored here: the admin account is created in the browser on first start.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shieldwaf
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shieldwaf-data
+  namespace: shieldwaf
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shieldwaf
+  namespace: shieldwaf
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: shieldwaf
+  template:
+    metadata:
+      labels:
+        app: shieldwaf
+    spec:
+      shareProcessNamespace: true        # lets the panel signal the nginx master to reload
+      securityContext:
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+      containers:
+        - name: engine
+          image: shieldwaf:1.0
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/engine-entrypoint.sh"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /__shieldwaf_health
+              port: 8080
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: panel
+          image: shieldwaf:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              memory: 768Mi        # nginx -t loads the OWASP rules once per site; raise if you add many sites
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: shieldwaf-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-proxy          # the protected traffic (clients -> WAF -> apps)
+  namespace: shieldwaf
+spec:
+  selector:
+    app: shieldwaf
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-panel          # the GUI + /metrics
+  namespace: shieldwaf
+spec:
+  selector:
+    app: shieldwaf
+  ports:
+    - name: http
+      port: 9000
+      targetPort: 9000

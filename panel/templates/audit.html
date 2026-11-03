@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block title %}Audit trail - ShieldWAF{% endblock %}
+{% block body %}
+<h1>Audit trail</h1>
+<p class="sub">Who changed what (latest 300 admin actions).</p>
+<div class="card"><table><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr>
+{% for r in rows %}<tr><td style="white-space:nowrap">{{ r.ts|ts }}</td><td>{{ r.user }}</td><td>{{ r.action }}</td><td class="mono">{{ r.detail }}</td></tr>
+{% else %}<tr><td colspan="4" class="hint">Empty.</td></tr>{% endfor %}</table></div>
+{% endblock %}

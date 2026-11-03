@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ShieldWAF login</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+<body><div class="center"><div class="box card">
+<div class="brand" style="font-size:26px">&#128737; ShieldWAF</div>
+<p class="hint" style="margin-top:0">Sign in to manage the firewall.</p>
+{% with msgs = get_flashed_messages(with_categories=true) %}{% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}{% endwith %}
+<form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}">
+<label>Username</label><input type="text" name="username" autocomplete="username" required autofocus>
+<label>Password</label><input type="password" name="password" autocomplete="current-password" required>
+<p><button class="btn" style="width:100%">Sign in</button></p></form>
+</div></div></body></html>

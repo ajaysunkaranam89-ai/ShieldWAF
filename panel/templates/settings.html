@@ -1,0 +1,26 @@
+{% extends "base.html" %}{% block title %}Settings - ShieldWAF{% endblock %}
+{% block body %}
+<h1>Settings</h1>
+<form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}">
+<div class="card"><b>Automatic banning (like fail2ban)</b>
+  <p class="hint">An IP that gets blocked (403) or rate-limited (429) too often is banned automatically on every site.</p>
+  <label class="chk"><input type="checkbox" name="ab_enabled" {{ 'checked' if st.autoban.enabled }}> Enable auto-ban</label>
+  <div class="row">
+    <div><label>Blocked requests</label><input type="number" name="ab_threshold" min="1" value="{{ st.autoban.threshold }}"></div>
+    <div><label>within (minutes)</label><input type="number" name="ab_window" min="1" value="{{ st.autoban.window_min }}"></div>
+    <div><label>ban for (minutes)</label><input type="number" name="ab_ban" min="1" value="{{ st.autoban.ban_min }}"></div>
+  </div>
+  <label>Never ban these IPs/CIDRs <small>(one per line, e.g. your admin PC)</small></label><textarea name="never_ban">{{ st.never_ban }}</textarea></div>
+<div class="card" style="margin-top:14px"><b>Real client IP</b>
+  <p class="hint">If ShieldWAF sits behind another proxy/load balancer, list that proxy's CIDRs here so the real client IP is read from X-Forwarded-For. Leave empty when clients connect directly (a spoofed header is then ignored).</p>
+  <textarea name="trusted_proxies" placeholder="10.0.0.0/8">{{ st.trusted_proxies }}</textarea></div>
+<div class="card" style="margin-top:14px"><b>Data retention</b>
+  <div class="row"><div><label>Keep logs and events (days)</label><input type="number" name="retention" min="1" max="365" value="{{ st.retention_days }}"></div></div></div>
+<p style="margin-top:14px"><button class="btn">Save settings</button></p></form>
+<div class="card" style="margin-top:18px"><b>Change admin password</b>
+  <form method="post" action="{{ url_for('password') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}">
+  <div class="row"><div><label>Current password</label><input type="password" name="old" autocomplete="current-password" required></div>
+  <div><label>New password <small>(12+ chars)</small></label><input type="password" name="new" autocomplete="new-password" required></div>
+  <div><label>Repeat new password</label><input type="password" name="new2" autocomplete="new-password" required></div></div>
+  <p><button class="btn sec">Change password</button></p></form></div>
+{% endblock %}

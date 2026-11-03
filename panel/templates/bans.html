@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}IP bans - ShieldWAF{% endblock %}
+{% block body %}
+<h1>IP bans</h1>
+<p class="sub">Banned addresses get HTTP 403 on every site until the ban expires. Auto-bans are created from the Settings page rules.</p>
+<form method="post" class="card" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+  <input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="add">
+  <div style="min-width:220px"><label style="margin-top:0">IP or CIDR</label><input type="text" name="ip" placeholder="203.0.113.7 or 198.51.100.0/24" required></div>
+  <div><label style="margin-top:0">Minutes</label><input type="number" name="minutes" value="60" min="1"></div>
+  <div style="flex:1;min-width:200px"><label style="margin-top:0">Reason</label><input type="text" name="reason" value="manual ban"></div>
+  <button class="btn dng">Ban</button></form>
+<div class="card" style="margin-top:14px"><table><tr><th>IP</th><th>Reason</th><th>Expires</th><th></th></tr>
+{% for b in bans %}<tr><td class="mono">{{ b.ip }}</td><td>{{ b.reason }} {% if b.manual %}<span class="pill p-info">manual</span>{% else %}<span class="pill p-warn">auto</span>{% endif %}</td>
+ <td>{{ b.until|ts }} <span class="hint">({{ ((b.until - now) / 60)|round|int }} min left)</span></td>
+ <td><form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="remove"><input type="hidden" name="ip" value="{{ b.ip }}"><button class="btn ok sm">Unban</button></form></td></tr>
+{% else %}<tr><td colspan="4" class="hint">No active bans.</td></tr>{% endfor %}</table></div>
+{% endblock %}

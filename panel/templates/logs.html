@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}Attack log - ShieldWAF{% endblock %}
+{% block body %}
+<h1>Attack log</h1>
+<p class="sub">Security events from ModSecurity (latest 300). <b>blocked</b> = the request was rejected, <b>detected</b> = only logged (detect mode).</p>
+<form method="get" class="card" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+  <div><label style="margin-top:0">Show</label><select name="only"><option value="blocked" {{ 'selected' if only=='blocked' }}>blocked</option><option value="detected" {{ 'selected' if only=='detected' }}>detected only</option><option value="all" {{ 'selected' if only=='all' }}>everything</option></select></div>
+  <div><label style="margin-top:0">Site</label><select name="host"><option value="">all sites</option>{% for s in cfg.sites %}<option value="{{ s.host }}" {{ 'selected' if host==s.host }}>{{ s.host }}</option>{% endfor %}</select></div>
+  <div style="flex:1;min-width:200px"><label style="margin-top:0">Search <small>(IP, URL, rule)</small></label><input type="text" name="q" value="{{ q }}"></div>
+  <button class="btn">Filter</button></form>
+<div class="card" style="margin-top:14px"><table>
+<tr><th>Time</th><th>IP</th><th>Site</th><th>Request</th><th>Rule</th><th>Score</th><th>Result</th></tr>
+{% for e in rows %}<tr><td style="white-space:nowrap">{{ e.ts|ts }}</td><td class="mono">{{ e.ip }}</td><td>{{ e.host }}</td><td class="mono">{{ e.method }} {{ e.uri }}</td>
+ <td><span class="mono">{{ e.rule_id }}</span> {{ e.msg }}</td><td class="hint">{{ e.score }}</td>
+ <td>{% if e.blocked %}<span class="pill p-err">blocked {{ e.status }}</span>{% else %}<span class="pill p-warn">detected</span>{% endif %}</td></tr>
+{% else %}<tr><td colspan="7" class="hint">No events match.</td></tr>{% endfor %}</table></div>
+{% endblock %}

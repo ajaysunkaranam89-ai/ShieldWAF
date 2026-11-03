@@ -1,0 +1,29 @@
+{% extends "base.html" %}{% block title %}Sites - ShieldWAF{% endblock %}
+{% block body %}
+<h1>Protected sites</h1>
+<p class="sub">Each site = a host name that clients use, forwarded (after inspection) to an upstream application.</p>
+<p>
+  <a class="btn" href="{{ url_for('site_new') }}">+ Add site</a>
+  <form class="inline" method="post" action="{{ url_for('site_maintenance', sid='all') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="state" value="on"><button class="btn warn" onclick="return confirm('Put ALL sites into maintenance mode?')">Maintenance ON (all)</button></form>
+  <form class="inline" method="post" action="{{ url_for('site_maintenance', sid='all') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="state" value="off"><button class="btn ok">Maintenance OFF (all)</button></form>
+  <form class="inline" method="post" action="{{ url_for('apply_now') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sec">Re-apply config</button></form>
+</p>
+<div class="card"><table>
+<tr><th>Host</th><th>Upstream</th><th>WAF mode</th><th>Protections</th><th>Maintenance</th><th></th></tr>
+{% for s in cfg.sites %}<tr>
+  <td><b>{{ s.host }}</b>{% if not s.enabled %} <span class="pill p-mut">disabled</span>{% endif %}</td>
+  <td class="mono">{{ s.upstream }}</td>
+  <td>{% if s.mode == 'block' %}<span class="pill p-ok">block</span>{% elif s.mode == 'detect' %}<span class="pill p-warn">detect only</span>{% else %}<span class="pill p-mut">off</span>{% endif %}
+      <span class="hint">PL{{ s.paranoia }}</span></td>
+  <td class="hint">{% if s.rate_limit.enabled %}rate {{ s.rate_limit.rps }}/s &middot; {% endif %}{% if s.allow_ips %}allow-list &middot; {% endif %}{% if s.deny_ips %}{{ s.deny_ips|length }} denied &middot; {% endif %}{% if s.block_bots %}bots &middot; {% endif %}{% if s.exclusions %}{{ s.exclusions|length }} exclusions{% endif %}</td>
+  <td>
+    {% if s.maintenance %}<span class="pill p-warn">ON</span>
+    <form class="inline" method="post" action="{{ url_for('site_maintenance', sid=s.id) }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="state" value="off"><button class="btn ok sm">Turn off</button></form>
+    {% else %}<span class="pill p-mut">off</span>
+    <form class="inline" method="post" action="{{ url_for('site_maintenance', sid=s.id) }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="state" value="on"><button class="btn warn sm" onclick="return confirm('Show the maintenance page to every visitor of {{ s.host }}?')">Turn on</button></form>{% endif %}
+  </td>
+  <td><a class="btn sec sm" href="{{ url_for('site_edit', sid=s.id) }}">Edit</a>
+    <form class="inline" method="post" action="{{ url_for('site_delete', sid=s.id) }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn dng sm" onclick="return confirm('Delete {{ s.host }}?')">Delete</button></form></td>
+</tr>{% else %}<tr><td colspan="6" class="hint">No sites yet. Click <b>+ Add site</b>.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

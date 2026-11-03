@@ -1,0 +1,30 @@
+{% extends "base.html" %}{% block title %}Dashboard - ShieldWAF{% endblock %}
+{% block body %}
+<h1>Dashboard</h1>
+<p class="sub">Last 24 hours &middot; engine:
+  {% if up %}<span class="pill p-ok">running</span>{% else %}<span class="pill p-err">not responding</span>{% endif %}
+  {% if maint %}&middot; <span class="pill p-warn">{{ maint }} site(s) in maintenance</span>{% endif %}
+  {% if bans %}&middot; <span class="pill p-info">{{ bans }} active ban(s)</span>{% endif %}</p>
+<div class="grid g4">
+  <div class="card stat s1"><div class="n">{{ total }}</div><div class="l">Requests</div></div>
+  <div class="card stat s2"><div class="n">{{ waf }}</div><div class="l">Blocked by WAF (403)</div></div>
+  <div class="card stat s3"><div class="n">{{ rl }}</div><div class="l">Rate limited (429)</div></div>
+  <div class="card stat s4"><div class="n">{{ err }}</div><div class="l">Server errors (5xx)</div></div>
+</div>
+<div class="card" style="margin-top:14px"><b>Requests per hour</b> <span class="hint">&middot; purple = all, red = blocked</span>
+  <div class="bars">{% for label, t, b in series %}<div style="height:{{ (t / peak * 100)|round|int }}%" title="{{ label }}: {{ t }} requests, {{ b or 0 }} blocked">{% if t %}<i style="height:{{ ((b or 0) / t * 100)|round|int }}%"></i>{% endif %}</div>{% endfor %}</div>
+  <div class="axis"><span>{{ series[0][0] }}</span><span>{{ series[12][0] }}</span><span>{{ series[-1][0] }}</span></div></div>
+<div class="grid g2" style="margin-top:14px">
+  <div class="card"><b>Top triggered rules</b>
+    <table><tr><th>Rule</th><th>What</th><th>Hits</th></tr>
+    {% for r in top_rules %}<tr><td class="mono">{{ r.rule_id }}</td><td>{{ r.msg }}</td><td>{{ r.c }}</td></tr>{% else %}<tr><td colspan="3" class="hint">No blocked attacks yet.</td></tr>{% endfor %}</table></div>
+  <div class="card"><b>Top blocked IPs</b>
+    <table><tr><th>IP</th><th>Blocked requests</th></tr>
+    {% for r in top_ips %}<tr><td class="mono">{{ r.ip }}</td><td>{{ r.c }}</td></tr>{% else %}<tr><td colspan="2" class="hint">None.</td></tr>{% endfor %}</table></div>
+</div>
+<div class="card" style="margin-top:14px"><b>Latest security events</b> <a href="{{ url_for('logs') }}" class="hint">see all</a>
+  <table><tr><th>Time</th><th>IP</th><th>Site</th><th>Request</th><th>Rule</th><th>Action</th></tr>
+  {% for e in recent %}<tr><td>{{ e.ts|ts }}</td><td class="mono">{{ e.ip }}</td><td>{{ e.host }}</td><td class="mono">{{ e.method }} {{ e.uri[:70] }}</td><td>{{ e.rule_id }} {{ e.msg[:50] }}</td>
+    <td>{% if e.blocked %}<span class="pill p-err">blocked {{ e.status }}</span>{% else %}<span class="pill p-warn">detected</span>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="6" class="hint">Nothing yet.</td></tr>{% endfor %}</table></div>
+{% endblock %}

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}ShieldWAF{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+<body>
+<div class="layout">
+<nav class="side">
+  <div class="brand">&#128737; ShieldWAF<small>open-source web firewall v{{ VERSION }}</small></div>
+  {% set nav = [('dashboard','Dashboard'),('sites','Sites'),('pages_view','Pages'),('logs','Attack log'),('bans','IP bans'),('settings','Settings'),('audit_view','Audit trail'),('backup','Backup')] %}
+  {% for ep, label in nav %}<a class="nav {{ 'on' if request.endpoint == ep or (ep=='sites' and request.endpoint in ('site_new','site_edit')) }}" href="{{ url_for(ep) }}">{{ label }}</a>{% endfor %}
+  <div class="foot">Signed in as <b>{{ session.get('user') }}</b>
+    <form method="post" action="{{ url_for('logout') }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sec sm" style="margin-top:8px">Log out</button></form>
+  </div>
+</nav>
+<main class="main">
+  {% with msgs = get_flashed_messages(with_categories=true) %}{% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}{% endwith %}
+  {% block body %}{% endblock %}
+</main>
+</div>
+</body></html>

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ShieldWAF setup</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+<body><div class="center"><div class="box card">
+<div class="brand" style="font-size:26px">&#128737; ShieldWAF</div>
+<h2 style="margin-top:0">First-time setup</h2>
+<p class="hint">Create the administrator account. The <b>setup code</b> is printed once in the panel container log:<br>
+<span class="mono">kubectl logs -n shieldwaf deploy/shieldwaf -c panel | findstr "Setup code"</span></p>
+{% with msgs = get_flashed_messages(with_categories=true) %}{% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}{% endwith %}
+<form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}">
+<label>Setup code</label><input type="text" name="code" autocomplete="off" required>
+<label>Admin username</label><input type="text" name="username" autocomplete="username" required>
+<label>Password <small>(at least 12 characters)</small></label><input type="password" name="password" autocomplete="new-password" required>
+<label>Repeat password</label><input type="password" name="password2" autocomplete="new-password" required>
+<p><button class="btn" style="width:100%">Create admin account</button></p></form>
+</div></div></body></html>

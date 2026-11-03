@@ -1,0 +1,53 @@
+{% extends "base.html" %}{% block title %}{{ 'Add' if new else 'Edit' }} site - ShieldWAF{% endblock %}
+{% block body %}
+<h1>{{ 'Add site' if new else 'Edit ' ~ s.host }}</h1>
+<p class="sub">Changes are tested with <span class="mono">nginx -t</span> first; if the engine rejects them, the old config stays active.</p>
+<form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}">
+<div class="card">
+  <b>Basics</b>
+  <div class="row">
+    <div><label>Host name <small>clients use this</small></label><input type="text" name="host" value="{{ s.host }}" placeholder="app.example.com" required></div>
+    <div><label>Upstream <small>where requests go</small></label><input type="text" name="upstream" value="{{ s.upstream }}" required></div>
+  </div>
+  <label class="chk"><input type="checkbox" name="enabled" {{ 'checked' if s.enabled }}> Site enabled</label>
+  <label class="chk"><input type="checkbox" name="maintenance" {{ 'checked' if s.maintenance }}> <b>Maintenance mode</b> (every visitor gets the maintenance page, the app keeps running)</label>
+  <label class="chk"><input type="checkbox" name="down_page" {{ 'checked' if s.down_page }}> Show the "service is down" page automatically when the app is unreachable (502/503/504)</label>
+</div>
+<div class="card" style="margin-top:14px">
+  <b>Web application firewall (ModSecurity + OWASP Core Rule Set)</b>
+  <div class="row">
+    <div><label>Mode</label><select name="mode">
+      <option value="block" {{ 'selected' if s.mode=='block' }}>block attacks</option>
+      <option value="detect" {{ 'selected' if s.mode=='detect' }}>detect only (log, never block)</option>
+      <option value="off" {{ 'selected' if s.mode=='off' }}>off</option></select></div>
+    <div><label>Paranoia level <small>1 fewest false positives .. 4 strictest</small></label><input type="number" name="paranoia" min="1" max="4" value="{{ s.paranoia }}"></div>
+    <div><label>Block threshold <small>anomaly score, default 5</small></label><input type="number" name="threshold" min="1" max="100" value="{{ s.threshold }}"></div>
+    <div><label>Max request body (MB)</label><input type="number" name="max_body_mb" min="1" max="1024" value="{{ s.max_body_mb }}"></div>
+  </div>
+  <label>Rule exclusions <small>(false-positive tuning) one per line: <span class="mono">RULEID</span> or <span class="mono">RULEID /path</span></small></label>
+  <textarea name="exclusions" placeholder="942100&#10;920420 /api/upload">{% for e in s.exclusions %}{{ e.rule }}{{ ' ' ~ e.path if e.path }}
+{% endfor %}</textarea>
+  <details><summary>Advanced: custom ModSecurity rules</summary>
+    <textarea name="custom_rules" placeholder='SecRule REQUEST_URI "@beginsWith /admin" "id:1200001,phase:1,deny,status:403,msg:admin blocked"'>{{ s.custom_rules }}</textarea>
+    <p class="hint">Raw SecRule lines, loaded before the OWASP rules. Use rule ids 1000000+. No Include directive. Invalid rules are rejected by the engine test.</p></details>
+</div>
+<div class="card" style="margin-top:14px">
+  <b>Access control</b>
+  <div class="row">
+    <div><label>Allow-list <small>only these IPs/CIDRs may connect (empty = everyone)</small></label><textarea name="allow_ips">{{ s.allow_ips|join('\n') }}</textarea></div>
+    <div><label>Deny-list <small>always blocked</small></label><textarea name="deny_ips">{{ s.deny_ips|join('\n') }}</textarea></div>
+  </div>
+  <label class="chk"><input type="checkbox" name="block_bots" {{ 'checked' if s.block_bots }}> Block known scanner / attack-tool user agents (sqlmap, nikto, nmap, ...)</label>
+  <label class="chk"><input type="checkbox" name="sec_headers" {{ 'checked' if s.sec_headers }}> Add security headers (X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy)</label>
+  <label class="chk"><input type="checkbox" name="rl_enabled" {{ 'checked' if s.rate_limit.enabled }}> Rate limiting per client IP</label>
+  <div class="row"><div><label>Requests per second</label><input type="number" name="rl_rps" min="1" max="10000" value="{{ s.rate_limit.rps }}"></div>
+    <div><label>Burst</label><input type="number" name="rl_burst" min="0" max="100000" value="{{ s.rate_limit.burst }}"></div></div>
+</div>
+<div class="card" style="margin-top:14px">
+  <b>Page overrides for this site</b> <span class="hint">(empty = use the global pages from the Pages menu). Use <span class="mono">{{ '{{SITE}}' }}</span> for the host name.</span>
+  <label>Maintenance page (HTML)</label><textarea name="page_maint" style="min-height:120px">{{ s.page_maint }}</textarea>
+  <label>Service-down page (HTML)</label><textarea name="page_down" style="min-height:120px">{{ s.page_down }}</textarea>
+</div>
+<p style="margin-top:16px"><button class="btn">Save and apply</button> <a class="btn sec" href="{{ url_for('sites') }}">Cancel</a></p>
+</form>
+{% endblock %}

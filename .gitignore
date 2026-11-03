@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+config.json
+secret.key
+bootstrap.code
+rendered/
+logs/
