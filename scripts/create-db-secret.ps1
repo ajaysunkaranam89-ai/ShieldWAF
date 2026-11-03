@@ -14,7 +14,14 @@ if ($LASTEXITCODE -eq 0) {
     $have = kubectl -n $Namespace get secret shieldwaf-db -o jsonpath='{.data.SHIELD_DATA_KEY}'
     if ($have) { Write-Host "secret shieldwaf-db already exists in $Namespace (left unchanged)"; exit 0 }
     $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes((New-DataKey)))
-    kubectl -n $Namespace patch secret shieldwaf-db -p "{`"data`":{`"SHIELD_DATA_KEY`":`"$b64`"}}" | Out-Null
+    # Windows PowerShell 5.1 mangles quotes in arguments to native programs: hand the patch over as a file instead
+    $patchFile = Join-Path ([IO.Path]::GetTempPath()) ("shieldwaf-patch-" + [guid]::NewGuid().ToString("N") + ".json")
+    try {
+        [IO.File]::WriteAllText($patchFile, ('{"data":{"SHIELD_DATA_KEY":"' + $b64 + '"}}'), (New-Object Text.UTF8Encoding($false)))
+        kubectl -n $Namespace patch secret shieldwaf-db --type merge --patch-file $patchFile | Out-Null
+        $rc = $LASTEXITCODE
+    } finally { Remove-Item $patchFile -ErrorAction SilentlyContinue }
+    if ($rc -ne 0) { Write-Error "could not add the encryption key to the secret shieldwaf-db"; exit 1 }
     Write-Host "secret shieldwaf-db in ${Namespace}: encryption key for shared files added (database password unchanged)"; exit 0
 }
 $bytes = New-Object byte[] 24

@@ -353,8 +353,23 @@ def _render(cfg):
             real_ip = "  real_ip_header X-Forwarded-For;\n  real_ip_recursive on;\n" + "".join(f"  set_real_ip_from {c};\n" for c in tp)
         sites = [effective(s) for s in cfg["sites"] if s["enabled"]]
         crs_active, crs_staged = crsupdate.active_dir(cfg), crsupdate.staged_dir(cfg)
+        crs_note = ""
         if not os.path.isdir(crs_active):
-            raise ValueError("the active OWASP rule set directory is missing")
+            # An upgrade from 2.2 (or a replica that has not received the shared copy yet): the promoted rule set lived on the old data volume.
+            # Fetch the same release again (checked download from github.com, then shared with the other replicas); if that is not possible
+            # keep protecting with the rule set built into the image rather than refusing to start.
+            tag = cfg["settings"]["crs"]["active"]
+            try:
+                crsupdate.stage(tag)
+            except Exception as e:  # noqa: BLE001
+                crs_note = f"rule set {tag} is not available here ({type(e).__name__}); using the built-in rule set"
+                print(f"[shieldwaf] {crs_note}", flush=True)
+            if os.path.isdir(crs_active):
+                crs_note = f"rule set {tag} was downloaded again"
+            elif os.path.isdir(crsupdate.BAKED):
+                crs_active = crsupdate.BAKED
+            else:
+                raise ValueError("the active OWASP rule set directory is missing")
         protected = [s for s in sites if s["mode"] != "off"]
         canary = crs_staged is not None and any(s["crs_channel"] == "canary" for s in protected)
         layout = "shared" if (SHARED_RULES and not canary) else "legacy"
@@ -461,7 +476,7 @@ http {{
             f.write(str(wait_s))
         t_act = time.time()
         ok, msg = _activate(gen, wait_s)
-        return ok, msg, {"layout": layout, "sites": len(sites), "dedicated": sum(1 for s in protected if _dedicated(s)),
+        return ok, msg, {"note": crs_note, "layout": layout, "sites": len(sites), "dedicated": sum(1 for s in protected if _dedicated(s)),
                          "write_ms": int((t_test - t_render) * 1000), "test_ms": int((t_act - t_test) * 1000),
                          "reload_ms": int((time.time() - t_act) * 1000)}
     except Exception as e:  # noqa: BLE001
