@@ -1,0 +1,22 @@
+{% extends "base.html" %}{% block title %}Users - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Users and roles</h1>
+<p class="sub"><b>Administrator</b>: full control. <b>Viewer</b>: can look at the dashboard, sites, attack log, bans and pages, but cannot change anything. New users must choose their own password at first login. Everyone should enable two-factor login.</p>
+<div class="card"><table><tr><th>User</th><th>Role</th><th>2FA</th><th>Created</th><th></th></tr>
+{% for name, u in users.items() %}<tr><td><b>{{ name }}</b>{% if name == me %} <span class="pill p-info">you</span>{% endif %}{% if u.must_change %} <span class="pill p-warn">must change password</span>{% endif %}</td>
+  <td><form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="role"><input type="hidden" name="name" value="{{ name }}">
+    <select name="role" style="width:auto;display:inline-block"><option value="admin" {{ 'selected' if u.role=='admin' or not u.role }}>administrator</option><option value="viewer" {{ 'selected' if u.role=='viewer' }}>viewer</option></select>
+    <button class="btn sec sm">Set</button></form></td>
+  <td>{% if u.totp_enabled %}<span class="pill p-ok">on</span>{% else %}<span class="pill p-warn">off</span>{% endif %}</td><td>{{ u.created|ts }}</td>
+  <td>
+    <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="signout"><input type="hidden" name="name" value="{{ name }}"><button class="btn sec sm">Sign out everywhere</button></form>
+    {% if u.totp_enabled %}<form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="reset2fa"><input type="hidden" name="name" value="{{ name }}"><button class="btn warn sm" data-confirm="Reset two-factor login for {{ name }}?">Reset 2FA</button></form>{% endif %}
+    {% if name != me %}<form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="delete"><input type="hidden" name="name" value="{{ name }}"><button class="btn dng sm" data-confirm="Delete user {{ name }}?">Delete</button></form>{% endif %}
+  </td></tr>{% endfor %}</table></div>
+<div class="card" style="margin-top:14px"><b>Add a user</b>
+  <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="add">
+  <div class="row"><div><label>User name</label><input type="text" name="name" autocomplete="off" required></div>
+  <div><label>Temporary password <small>(12+ chars, 3 of 4 character types)</small></label><input type="password" name="password" autocomplete="new-password" required></div>
+  <div><label>Role</label><select name="role"><option value="viewer">viewer (read only)</option><option value="admin">administrator</option></select></div></div>
+  <p><button class="btn">Create user</button></p></form></div>
+{% endblock %}

@@ -25,7 +25,12 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 | Admin two-factor login (TOTP) | **yes**, with recovery codes | (?) | yes (UI) (?) |
 | Admin hardening (lockout, revocable sessions, CSP, IP allow-list) | **yes** (see SECURITY.md) | (?) | partly (?) |
 | Upstream SSRF protection (metadata / loopback) | **yes** | (?) | no |
-| Country blocking, threat-intel feeds | not yet | (?) | country, DNSBL, CrowdSec, BunkerNet |
+| Country blocking | **yes**, per site allow/deny (registry data, no licence key) | (?) | yes (country plugin) |
+| IP reputation / threat-intel feeds | **yes**: Spamhaus DROP + FireHOL level 1 or your own https lists (no shared community signals like CrowdSec) | (?) | DNSBL, CrowdSec, BunkerNet |
+| Positive security model (allow only known paths / content types) | **yes**, per site | (?) | no (custom config only) |
+| Layer-7 flood defence | **yes**: under-attack mode + automatic escalation | HTTP Flood menu (?) | bad behavior, limits; anti-DDoS plugin is Pro |
+| Volumetric (network) DDoS | no (impossible in a cluster: needs provider / CDN, see docs/DDOS.md) | no | no |
+| Users and roles | **yes**: administrators + read-only viewers | (?) | Pro (user manager) |
 | Metrics / dashboards | built-in dashboard + Prometheus `/metrics` (token) | built-in statistics | built-in; Prometheus exporter is Pro |
 | Attack log with rule ids | yes, searchable | yes ("Attacks" menu) | yes (Reports) |
 | Audit trail of admin actions (with IPs) | yes | (?) | Pro (reporting/user manager) |
@@ -40,8 +45,8 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 - **Where SafeLine is better:** the detection engine (semantic analysis is harder to evade and gives fewer false positives than regex rules), a more mature anti-bot system, and a more polished console. Use it where you can run Docker Compose.
 - **Where BunkerWeb is better:** the largest free plugin list (automatic certificates, CrowdSec, country blocking) and years of production use.
 - **Where A Shield WAF is better for you:** it runs natively and hardened on your Kubernetes cluster with very little memory, and it gives you for free the things the other two lock or lack: **GUI maintenance switch, editable visitor pages, automatic service-down page, safe apply with rollback, rule exclusions in the GUI, two-factor admin login, audit trail, SSRF protection**.
-- **Honest gaps in A Shield WAF today:** no automatic certificate renewal (use cert-manager), no country blocking or CrowdSec feeds, single admin, single replica, no independent audit, pattern-based detection only.
+- **Honest gaps in A Shield WAF today:** no automatic certificate renewal (use cert-manager), no shared community threat signals (CrowdSec-style), single replica, **no independent audit**, detection that is only partly pattern-free (the OWASP rules are pattern-based; the positive model, feeds, country rules, challenge and flood defence help), and no volumetric DDoS protection.
 
 ## Feature score (the author's own 20-item checklist of practical WAF features)
-Verified here: **A Shield WAF about 18 / 20 (90%)**, BunkerWeb free about 15 / 20, SafeLine not measurable on this cluster.
-Missing for the last two points: country blocking / threat-intel feeds, and Grafana-style dashboards. This is a self-assessment, not a benchmark.
+Verified here: **A Shield WAF about 19 / 20 (95%)**, BunkerWeb free about 15 / 20, SafeLine not measurable on this cluster.
+The missing point is alerting / SIEM export (planned). This is a self-assessment, not a benchmark, and it says nothing about maturity or independent assurance.

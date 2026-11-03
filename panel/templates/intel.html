@@ -1,0 +1,37 @@
+{% extends "base.html" %}{% block title %}Threat intelligence - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Threat intelligence</h1>
+<p class="sub">Defences that do not depend on attack patterns: addresses with a bad reputation are refused before any rule runs, and sites can allow or deny whole countries.</p>
+
+<div class="card"><b>IP reputation feeds</b>
+  <p class="hint">Public lists of hijacked networks, botnets and attackers, downloaded over HTTPS and refreshed automatically. Private, reserved and very broad ranges are always ignored, and your "never ban" and trusted-proxy addresses are removed, so a list can never lock out your own network.</p>
+  <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="settings">
+    <label class="chk"><input type="checkbox" name="enabled" {{ 'checked' if f.enabled }}> Block addresses on these lists (every site)</label>
+    <table><tr><th>Use</th><th>Feed</th><th>Address</th><th></th></tr>
+    {% for src in f.sources %}<tr><td><input type="checkbox" name="src_{{ loop.index0 }}" {{ 'checked' if src.on }}></td><td>{{ src.name }}</td><td class="mono">{{ src.url }}</td>
+      <td><button class="btn dng sm" form="rm{{ loop.index0 }}" data-confirm="Remove this feed?">Remove</button></td></tr>{% endfor %}</table>
+    <div class="row"><div><label>Refresh every (hours)</label><input type="number" name="refresh_hours" min="1" max="168" value="{{ f.refresh_hours }}"></div></div>
+    <p><button class="btn">Save</button></p></form>
+  {% for src in f.sources %}<form id="rm{{ loop.index0 }}" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="remove"><input type="hidden" name="idx" value="{{ loop.index0 }}"></form>{% endfor %}
+  <p>Status: {% if f.last_ok %}<span class="pill p-ok">{{ f.last_count }} networks</span> <span class="hint">updated {{ f.last_ok|ts }}</span>{% else %}<span class="pill p-warn">not downloaded yet</span>{% endif %}
+    {% if f.last_error %}<span class="pill p-err">{{ f.last_error }}</span>{% endif %}
+    <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="refresh"><button class="btn sec sm">Refresh now</button></form></p>
+  <details><summary>Add your own feed</summary>
+    <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="add">
+    <div class="row"><div><label>Name</label><input type="text" name="name" required></div><div><label>https address of a text list (one IP or CIDR per line)</label><input type="text" name="url" placeholder="https://example.org/blocklist.txt" required></div></div>
+    <p><button class="btn sec">Add feed</button></p></form></details>
+</div>
+
+<div class="card" style="margin-top:14px"><b>Country data</b>
+  <p class="hint">Used by the per-site country rules (Sites, edit, "Country rules"). Built from the free public allocation files of the five regional internet registries. It shows the <em>registered</em> country of an address block, not the physical location of a user (VPNs and cloud networks can differ).</p>
+  <p>Status: {% if geo.updated %}<span class="pill p-ok">{{ geo.countries }} countries, {{ geo.blocks }} blocks</span> <span class="hint">updated {{ geo.updated|int|ts }}</span>{% else %}<span class="pill p-warn">not downloaded yet</span>{% endif %}
+    {% if geo.running %}<span class="pill p-info">downloading...</span>{% endif %}{% if geo.error %}<span class="pill p-err">{{ geo.error }}</span>{% endif %}
+    <form class="inline" method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="geo"><button class="btn sec sm">Update country data</button></form></p>
+</div>
+
+<div class="card" style="margin-top:14px"><b>Look up an address</b>
+  <form method="get" style="display:flex;gap:10px;align-items:end"><div style="flex:1"><label style="margin-top:0">IP address</label><input type="text" name="ip" value="{{ look.ip if look else '' }}" placeholder="203.0.113.7"></div><button class="btn sec">Look up</button></form>
+  {% if look %}<p>{{ look.ip }}: reputation list: {% if look.feed %}<span class="pill p-err">listed in {{ look.feed }}</span>{% else %}<span class="pill p-ok">not listed</span>{% endif %}
+    &middot; registered country: {% if look.country %}<b>{{ look.country }}</b>{% else %}<span class="hint">unknown (or country data not downloaded)</span>{% endif %}</p>{% endif %}
+</div>
+{% endblock %}

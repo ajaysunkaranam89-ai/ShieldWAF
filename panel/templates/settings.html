@@ -9,6 +9,12 @@
 <div class="card" style="margin-top:14px"><b>Upstream restrictions (cloud safety)</b>
   <p class="hint">Sites may only forward to hosts that end with one of these suffixes, for example <span class="mono">svc.cluster.local</span> or your private domain. Empty = any host except loopback / link-local / cloud-metadata addresses (always refused).</p>
   <textarea name="upstream_allow" placeholder="svc.cluster.local">{{ st.upstream_allow }}</textarea></div>
+<div class="card" style="margin-top:14px"><b>Flood defence (layer 7)</b>
+  <p class="hint">If one site receives more requests per second than the threshold, "under attack" mode switches on for that site automatically (everyone must pass the anti-bot challenge, a rate limit applies) and switches off when traffic calms down. This stops application-layer floods. It cannot stop network-level (volumetric) attacks: those must be filtered by your cloud provider or CDN before they reach the cluster (see docs/DDOS.md).</p>
+  <label class="chk"><input type="checkbox" name="dd_auto" {{ 'checked' if st.ddos.auto }}> Enable automatic under-attack mode</label>
+  <div class="row"><div><label>Requests per second (per site)</label><input type="number" name="dd_rps" min="10" max="100000" value="{{ st.ddos.rps_threshold }}"></div>
+  <div><label>measured over (seconds)</label><input type="number" name="dd_window" min="5" max="300" value="{{ st.ddos.window_s }}"></div>
+  <div><label>stay on for at least (minutes)</label><input type="number" name="dd_hold" min="1" max="1440" value="{{ st.ddos.hold_min }}"></div></div></div>
 <div class="card" style="margin-top:14px"><b>Automatic banning (like fail2ban)</b>
   <p class="hint">An IP that gets blocked (403) or rate-limited (429) too often is banned automatically on every site.</p>
   <label class="chk"><input type="checkbox" name="ab_enabled" {{ 'checked' if st.autoban.enabled }}> Enable auto-ban</label>

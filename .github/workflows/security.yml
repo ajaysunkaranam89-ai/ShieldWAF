@@ -1,0 +1,43 @@
+# Security checks that run on every push and weekly: static analysis of the Python code, scan of the Kubernetes manifest and
+# Dockerfile, build of the image and a vulnerability scan of it. (Self-review automation, not an independent audit.)
+name: security
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+permissions:
+  contents: read
+jobs:
+  bandit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install bandit && bandit -r panel -ll
+  config-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+  image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t shieldwaf:ci .
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: shieldwaf:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile

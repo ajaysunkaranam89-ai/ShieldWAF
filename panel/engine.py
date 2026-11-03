@@ -5,12 +5,14 @@ reply (444), spoofable X-Forwarded-For is replaced by the real client IP, reques
 Reload handshake: the panel swaps the `current` link and writes reload.request; the engine container (separate, no shared
 process namespace) tests+reloads nginx and answers in reload.status; on failure the panel rolls back to the previous generation."""
 import ipaddress
+import json
 import os
 import re
 import shutil
 import subprocess
 import time
 
+import feeds
 import pages
 import security
 import store
@@ -51,6 +53,17 @@ def split_lines(text):
     return [x.strip() for x in re.split(r"[\s,]+", text or "") if x.strip()]
 
 
+def effective(site):
+    """The configuration actually rendered: "under attack" forces the anti-bot challenge for everyone plus a rate limit."""
+    s = json.loads(json.dumps(site))
+    if s.get("under_attack"):
+        ch = s["challenge"]
+        ch.update(enabled=True, scope="all", difficulty=max(int(ch["difficulty"]), 4), ttl_hours=min(int(ch["ttl_hours"]), 6))
+        if not s["rate_limit"]["enabled"]:
+            s["rate_limit"].update(enabled=True, rps=20, burst=40)
+    return s
+
+
 def _modsec_site(site, gen):
     mode = {"block": "On", "detect": "DetectionOnly"}.get(site["mode"], "Off")
     body = int(site["max_body_mb"]) * 1024 * 1024
@@ -82,11 +95,19 @@ def _modsec_site(site, gen):
     return "\n".join(lines) + "\n"
 
 
-def _common(site, gen):
+def _common(site, gen, feed_on):
     """Directives shared by the HTTP and HTTPS server of a site (access control, headers, WAF, maintenance / proxy)."""
     sid = site["id"]
     pdir = f"{gen}/pages/{sid}"
     L = [f"  client_max_body_size {int(site['max_body_mb'])}m;", "  limit_conn perip 300;", f"  include {gen}/bans.conf;"]
+    if feed_on:
+        L.append("  if ($shield_feed) { return 403; }")                 # listed on a threat-intelligence feed
+    g = site["geo"]
+    cc = [c for c in split_lines(g["countries"].upper()) if re.fullmatch(r"[A-Z]{2}", c)]
+    if g["mode"] == "deny" and cc:
+        L.append(f'  if ($shield_cc ~ "^({"|".join(cc)})$") {{ return 403; }}')
+    elif g["mode"] == "allow" and cc:
+        L.append(f'  if ($shield_cc !~ "^({"|".join(cc + ["LAN"])})$") {{ return 403; }}')
     for ip in clean_ips(site["deny_ips"]):
         L.append(f"  deny {ip};")
     allow = clean_ips(site["allow_ips"])
@@ -94,6 +115,16 @@ def _common(site, gen):
         L += [f"  allow {a};" for a in allow] + ["  deny all;"]
     methods = [m for m in site["methods"].split() if METHOD_RE.match(m)] or ["GET", "HEAD", "POST"]
     L.append(f'  if ($request_method !~ "^({"|".join(methods)})$") {{ return 405; }}')
+    pos = site["positive"]
+    if pos["enabled"]:
+        prefixes = [p for p in split_lines(pos["paths"]) if re.fullmatch(r"=?/[A-Za-z0-9._~/\-]*", p)]
+        if prefixes:
+            alts = [("^" + re.escape(p[1:]) + "$") if p.startswith("=") else ("^" + re.escape(p)) for p in prefixes] + ["^/__shield/"]
+            L.append(f'  if ($uri !~ "{"|".join(alts)}") {{ return 403; }}')
+        if 64 <= int(pos["max_url"]) <= 8000:
+            L.append(f'  if ($request_uri ~ "^.{{{int(pos["max_url"]) + 1},}}") {{ return 414; }}')
+        if split_lines(pos["content_types"]):
+            L.append(f"  if ($shield_ct_{site['id']} = 0) {{ return 415; }}")
     if site["sec_headers"]:
         L += ['  add_header X-Frame-Options "SAMEORIGIN" always;', '  add_header X-Content-Type-Options "nosniff" always;',
               '  add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
@@ -138,9 +169,9 @@ def _common(site, gen):
     return L + loc
 
 
-def _server(site, gen):
+def _server(site, gen, feed_on):
     host, t = site["host"], site["tls"]
-    body = "\n".join(_common(site, gen))
+    body = "\n".join(_common(site, gen, feed_on))
     if not (t["enabled"] and t["source"] != "none"):
         return f"server {{\n  listen {HTTP_PORT};\n  server_name {host};\n{body}\n}}\n"
     cert, key = security.cert_paths(site)
@@ -162,7 +193,7 @@ def _server(site, gen):
 
 def render(cfg):
     """Write a new generation, test it with `nginx -t`, switch `current`, wait for the engine to confirm. Returns (ok, message)."""
-    for d in (LOG_DIR, RENDER_DIR, "/tmp/nx"):
+    for d in (LOG_DIR, RENDER_DIR, "/tmp/nx"):      # nosec B108 - /tmp is the pod's private emptyDir, not a shared host directory
         os.makedirs(d, exist_ok=True)
     gen = os.path.join(RENDER_DIR, f"gen-{int(time.time() * 1000)}")
     os.makedirs(gen)
@@ -175,7 +206,24 @@ def render(cfg):
         tp = clean_ips(split_lines(st["trusted_proxies"]))
         if tp:
             real_ip = "  real_ip_header X-Forwarded-For;\n  real_ip_recursive on;\n" + "".join(f"  set_real_ip_from {c};\n" for c in tp)
-        sites = [s for s in cfg["sites"] if s["enabled"]]
+        sites = [effective(s) for s in cfg["sites"] if s["enabled"]]
+        feed_src = feeds.feed_file() if st["feeds"]["enabled"] else None
+        feed_on = bool(feed_src)
+        if feed_on:
+            shutil.copy(feed_src, f"{gen}/feeds.geo")
+        need_cc = sorted({c for s in sites if s["geo"]["mode"] != "off"
+                          for c in split_lines(s["geo"]["countries"].upper()) if re.fullmatch(r"[A-Z]{2}", c)})
+        if need_cc and not feeds.geo_ready():
+            raise ValueError("country data has not been downloaded yet (Threat intelligence page: Update country data)")
+        lan = "".join(f"  {n} LAN;\n" for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "100.64.0.0/10", "fc00::/7", "::1/128"))
+        with open(f"{gen}/countries.geo", "w") as f:
+            f.write(lan + feeds.country_geo_lines(need_cc))
+        ct_maps = ""
+        for s in sites:
+            types = [t.lower() for t in split_lines(s["positive"]["content_types"]) if re.fullmatch(r"[a-z0-9.+/-]+", t.lower())]
+            if s["positive"]["enabled"] and types:
+                alt = "|".join(re.escape(t) for t in types)
+                ct_maps += f'  map $http_content_type $shield_ct_{s["id"]} {{ default 0; "" 1; "~*^(?:{alt})(?:;|$)" 1; }}\n'
         zones = "".join(f"  limit_req_zone $binary_remote_addr zone=rl_{s['id']}:10m rate={int(s['rate_limit']['rps'])}r/s;\n"
                         for s in sites if s["rate_limit"]["enabled"])
         servers = ""
@@ -194,7 +242,7 @@ def render(cfg):
                 with open(f"{gen}/htpasswd-{s['id']}", "w") as f:
                     f.write("".join(f"{u}:{h}\n" for u, h in s["auth"]["users"].items()))
                 os.chmod(f"{gen}/htpasswd-{s['id']}", 0o640)
-            servers += _server(s, gen)
+            servers += _server(s, gen, feed_on)
         any_tls = any(s["tls"]["enabled"] and s["tls"]["source"] != "none" for s in sites)
         default_tls = (f"  server {{ listen {TLS_PORT} ssl default_server; ssl_reject_handshake on; }}\n" if any_tls else "")
         conf = f"""load_module /etc/nginx/modules/ngx_http_modsecurity_module.so;
@@ -224,7 +272,9 @@ http {{
   js_set $chal_need challenge.need;
   limit_conn_zone $binary_remote_addr zone=perip:10m;
   limit_req_zone $binary_remote_addr zone=chal_verify:10m rate=10r/s;
-{real_ip}{zones}
+  geo $shield_feed {{ default 0;{(chr(10) + "    include " + gen + "/feeds.geo;") if feed_on else ""} }}
+  geo $shield_cc {{ default ""; include {gen}/countries.geo; }}
+{ct_maps}{real_ip}{zones}
   server {{
     listen {HTTP_PORT} default_server;
     server_name _;
@@ -236,7 +286,7 @@ http {{
 """
         with open(f"{gen}/nginx.conf", "w") as f:
             f.write(conf)
-        r = subprocess.run(["nginx", "-t", "-c", f"{gen}/nginx.conf"], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["/usr/sbin/nginx", "-t", "-c", f"{gen}/nginx.conf"], capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             shutil.rmtree(gen, ignore_errors=True)
             return False, (r.stderr or r.stdout).strip()[-1500:]

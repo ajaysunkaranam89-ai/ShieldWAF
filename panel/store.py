@@ -20,6 +20,14 @@ DEFAULT_SETTINGS = {
     "upstream_allow": "",           # if set, upstream host names must end with one of these suffixes (one per line)
     "metrics_token": "",            # bearer token required for /metrics (generated at first start)
     "session_idle_min": 30,
+    # IP reputation feeds (non-pattern defence): known-bad networks are refused before any rule runs
+    "feeds": {"enabled": True, "refresh_hours": 6, "last_ok": 0, "last_count": 0, "last_error": "",
+              "sources": [
+                  {"name": "Spamhaus DROP (hijacked networks)", "url": "https://www.spamhaus.org/drop/drop.txt", "on": True},
+                  {"name": "FireHOL level 1 (attackers, botnets)", "url": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset", "on": True},
+              ]},
+    # layer-7 DoS defence: automatic "under attack" mode when one site receives too many requests per second
+    "ddos": {"auto": False, "rps_threshold": 200, "window_s": 20, "hold_min": 15},
 }
 
 DEFAULT_SITE = {
@@ -38,6 +46,10 @@ DEFAULT_SITE = {
             "redirect_http": True, "redirect_port": "", "hsts": True, "hsts_days": 365, "mounted_name": ""},
     "auth": {"enabled": False, "realm": "Restricted", "users": {}},      # users: name -> crypt hash (never shown)
     "challenge": {"enabled": False, "difficulty": 4, "ttl_hours": 12, "scope": "pages", "exclude_paths": ""},
+    "positive": {"enabled": False, "paths": "", "content_types": "application/json application/x-www-form-urlencoded multipart/form-data text/plain",
+                 "max_url": 2048},          # positive security model: only what is listed gets through
+    "geo": {"mode": "off", "countries": ""},      # off | deny | allow  + country codes such as CN RU
+    "under_attack": False, "ua_until": 0,   # forces the challenge for everyone + a rate limit; ua_until>0 = automatic, ends by itself
     "exclusions": [],               # [{"rule": "942100", "path": "/api/upload"}]  (path optional)
     "custom_rules": "",
     "page_maint": "", "page_down": "",   # per-site override HTML (empty = use global page)
@@ -62,9 +74,17 @@ def load():
             cfg["settings"].setdefault(k, v)
         for k, v in DEFAULT_SETTINGS["autoban"].items():
             cfg["settings"]["autoban"].setdefault(k, v)
+        cfg["settings"]["feeds"].setdefault("sources", DEFAULT_SETTINGS["feeds"]["sources"])
+        for k, v in DEFAULT_SETTINGS["feeds"].items():
+            cfg["settings"]["feeds"].setdefault(k, v)
+        for k, v in DEFAULT_SETTINGS["ddos"].items():
+            cfg["settings"].setdefault("ddos", {}).setdefault(k, v)
         for s in cfg["sites"]:
             for k, v in DEFAULT_SITE.items():
                 s.setdefault(k, json.loads(json.dumps(v)))
+            for k in ("positive",):
+                for kk, vv in DEFAULT_SITE[k].items():
+                    s[k].setdefault(kk, vv)
         return cfg
 
 

@@ -1,5 +1,5 @@
 # ShieldWAF 2.0 on Kubernetes: one pod = engine (nginx + ModSecurity + OWASP CRS) + panel (HTTPS GUI), sharing only a data volume.
-# Build and load the image first (see README): docker build -t shieldwaf:2.0 . ; kind load docker-image shieldwaf:2.0 --name mycluster
+# Build and load the image first (see README): docker build -t shieldwaf:2.1 . ; kind load docker-image shieldwaf:2.1 --name mycluster
 # No secrets are stored here: the admin account is created in the browser on first start.
 #
 # Hardening in this file: "restricted" Pod Security level, non-root, read-only root filesystem, all capabilities dropped,
@@ -52,7 +52,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: engine
-          image: shieldwaf:2.0
+          image: shieldwaf:2.1
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/engine-entrypoint.sh"]
           ports:
@@ -89,7 +89,7 @@ spec:
             #   mountPath: /certs
             #   readOnly: true
         - name: panel
-          image: shieldwaf:2.0
+          image: shieldwaf:2.1
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9000

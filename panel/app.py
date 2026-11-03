@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.request
 from datetime import datetime
@@ -18,11 +19,12 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import background
 import engine
+import feeds
 import pages
 import security
 import store
 
-VERSION = "2.0"
+VERSION = "2.1"
 app = Flask(__name__)
 store.init_db()
 
@@ -165,6 +167,14 @@ def _guard():
     if not request.path.startswith(open_paths) and not session_valid():
         session.clear()
         return redirect(url_for("login"))
+    if session.get("user") and not request.path.startswith(open_paths):
+        u = store.load()["users"].get(me(), {})
+        if (u.get("role", "admin") == "viewer"
+                and (request.endpoint not in VIEWER_OK or (request.method == "POST" and request.endpoint not in POST_OK_FOR_VIEWER))):
+            abort(403)
+        if u.get("must_change") and request.endpoint not in ("settings", "password", "logout"):
+            flash("Please choose your own password before continuing.", "err")
+            return redirect(url_for("settings"))
 
 
 @app.after_request
@@ -172,7 +182,12 @@ def _headers(r):
     r.headers["X-Frame-Options"] = "DENY"
     r.headers["X-Content-Type-Options"] = "nosniff"
     r.headers["Referrer-Policy"] = "no-referrer"
-    r.headers["Cache-Control"] = "no-store"
+    if request.path.startswith("/static/"):
+        r.headers["Cache-Control"] = "public, max-age=3600"        # logo, css, js: nothing sensitive
+    else:
+        r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        r.headers["Pragma"] = "no-cache"
+    r.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
     r.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     r.headers["Cross-Origin-Opener-Policy"] = "same-origin"
     r.headers["Cross-Origin-Resource-Policy"] = "same-origin"
@@ -184,6 +199,19 @@ def _headers(r):
 
 def me():
     return session.get("user", "?")
+
+
+VIEWER_OK = {"dashboard", "index", "sites", "site_edit", "pages_view", "logs", "bans", "intel", "settings", "security_view", "logout", "password", "static", "healthz"}
+POST_OK_FOR_VIEWER = {"logout", "password", "security_view"}
+
+
+def role():
+    return store.load()["users"].get(me(), {}).get("role", "admin")
+
+
+@app.context_processor
+def _ctx():
+    return {"is_admin": session.get("user") is not None and role() == "admin"}
 
 
 def apply_cfg(cfg, action, detail=""):
@@ -252,6 +280,19 @@ def validate_site(s, cfg):
         return "Challenge: difficulty 3-6, lifetime 1-720 hours, scope pages or all."
     if any(not PATH_RE.match(p) for p in engine.split_lines(c["exclude_paths"])):
         return "Challenge exclude paths must be URL paths like /api/ ."
+    ps = s["positive"]
+    if any(not re.fullmatch(r"=?/[A-Za-z0-9._~/\-]*", x) for x in engine.split_lines(ps["paths"])):
+        return "Allowed paths must look like /api/ (prefix) or =/ (exact)."
+    if ps["enabled"] and not engine.split_lines(ps["paths"]):
+        return "Positive security model: list at least one allowed path (for example =/ and /api/)."
+    if not (64 <= int(ps["max_url"]) <= 8000) or any(not re.fullmatch(r"[a-z0-9.+/-]+", t.lower()) for t in engine.split_lines(ps["content_types"])):
+        return "Positive model: URL length 64-8000, content types like application/json."
+    g = s["geo"]
+    codes = engine.split_lines(g["countries"].upper())
+    if g["mode"] not in ("off", "deny", "allow") or any(not re.fullmatch(r"[A-Z]{2}", c2) for c2 in codes):
+        return "Country rules: use two-letter codes such as IN US CN."
+    if g["mode"] != "off" and not codes:
+        return "Country rules: enter at least one country code."
     return None
 
 
@@ -293,6 +334,9 @@ def parse_site(form, cfg, existing=None):
             "challenge": {"enabled": bool(form.get("chal_enabled")), "difficulty": int(form.get("chal_difficulty", 4)),
                           "ttl_hours": int(form.get("chal_ttl", 12)), "scope": form.get("chal_scope", "pages"),
                           "exclude_paths": form.get("chal_exclude", "")},
+            "positive": {"enabled": bool(form.get("pos_enabled")), "paths": form.get("pos_paths", ""),
+                         "content_types": form.get("pos_types", ""), "max_url": int(form.get("pos_max_url", 2048) or 2048)},
+            "geo": {"mode": form.get("geo_mode", "off"), "countries": " ".join(engine.split_lines(form.get("geo_countries", "").upper()))},
             "exclusions": ex, "custom_rules": form.get("custom_rules", ""),
             "page_maint": form.get("page_maint", ""), "page_down": form.get("page_down", ""),
         })
@@ -318,7 +362,7 @@ def handle_certs(s, form):
 
 def engine_up():
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{engine.HTTP_PORT}/__shieldwaf_health", timeout=1) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{engine.HTTP_PORT}/__shieldwaf_health", timeout=1) as r:  # nosec B310 - fixed loopback URL
             return r.status == 200
     except Exception:  # noqa: BLE001
         return False
@@ -357,7 +401,7 @@ def setup():
             flash(password_error(pw, user), "err")
         else:
             cfg["users"][user] = {"hash": generate_password_hash(pw), "created": time.time(), "totp_secret": "", "totp_enabled": False,
-                                  "totp_last": 0, "recovery": []}
+                                  "totp_last": 0, "recovery": [], "role": "admin", "must_change": False}
             store.save(cfg)
             store.audit(user, "setup", "admin account created", client_ip())
             engine.render(cfg)
@@ -501,6 +545,9 @@ def dashboard():
     warn = []
     if not cfg["users"].get(me(), {}).get("totp_enabled"):
         warn.append("Two-factor login is not enabled for your account. Enable it under Security.")
+    fd = cfg["settings"]["feeds"]
+    if fd["enabled"] and not fd["last_ok"]:
+        warn.append("Threat feeds are enabled but have not been downloaded yet (Threat intel page: Refresh now).")
     for s in cfg["sites"]:
         ci = security.cert_info(security.cert_paths(s)[0]) if s["tls"]["enabled"] else None
         if ci and ci["days_left"] is not None and ci["days_left"] < 30:
@@ -512,7 +559,7 @@ def dashboard():
         top_rules=q("SELECT rule_id, msg, COUNT(*) c FROM events WHERE blocked=1 AND rule_id!='' AND ts>? GROUP BY rule_id ORDER BY c DESC LIMIT 8", since),
         top_ips=q("SELECT ip, COUNT(*) c FROM access WHERE ts>? AND status IN (403,429) GROUP BY ip ORDER BY c DESC LIMIT 8", since),
         recent=q("SELECT * FROM events ORDER BY ts DESC LIMIT 10"),
-        maint=sum(1 for s in cfg["sites"] if s["maintenance"]), bans=sum(1 for b in cfg["bans"] if b["until"] > now), up=engine_up())
+        under=sum(1 for s in cfg["sites"] if s["under_attack"]), maint=sum(1 for s in cfg["sites"] if s["maintenance"]), bans=sum(1 for b in cfg["bans"] if b["until"] > now), up=engine_up())
 
 
 # --- sites -------------------------------------------------------------------------------------
@@ -592,6 +639,19 @@ def site_maintenance(sid):
     return redirect(url_for("sites"))
 
 
+@app.route("/sites/<sid>/under-attack", methods=["POST"])
+def site_under_attack(sid):
+    """Emergency switch: every visitor must pass the anti-bot challenge and a rate limit applies. sid='all' for every site."""
+    on = request.form.get("state") == "on"
+    with store._lock:
+        cfg = store.load()
+        targets = cfg["sites"] if sid == "all" else [site_by_id(cfg, sid) or abort(404)]
+        for s in targets:
+            s["under_attack"], s["ua_until"] = on, 0
+        apply_cfg(cfg, f"under-attack mode {'ON' if on else 'OFF'}", ", ".join(s["host"] for s in targets))
+    return redirect(url_for("sites"))
+
+
 # --- pages -------------------------------------------------------------------------------------
 @app.route("/pages", methods=["GET", "POST"])
 def pages_view():
@@ -610,6 +670,56 @@ def pages_view():
                 apply_cfg(cfg, "global pages saved")
                 return redirect(url_for("pages_view"))
         return render_template("pages.html", cfg=cfg, dm=pages.DEFAULT_MAINTENANCE, dd=pages.DEFAULT_DOWN)
+
+
+# --- threat intelligence (reputation feeds, country data) --------------------------------------
+@app.route("/intel", methods=["GET", "POST"])
+def intel():
+    with store._lock:
+        cfg = store.load()
+        f = cfg["settings"]["feeds"]
+        if request.method == "POST":
+            act = request.form.get("act")
+            if act == "settings":
+                try:
+                    hrs = int(request.form.get("refresh_hours", 6))
+                    if not 1 <= hrs <= 168:
+                        raise ValueError("range")
+                except ValueError:
+                    flash("Refresh interval: 1-168 hours.", "err")
+                    return redirect(url_for("intel"))
+                f["enabled"], f["refresh_hours"] = bool(request.form.get("enabled")), hrs
+                for i, src in enumerate(f["sources"]):
+                    src["on"] = bool(request.form.get(f"src_{i}"))
+                apply_cfg(cfg, "threat feed settings saved")
+            elif act == "add":
+                name, url = request.form.get("name", "").strip()[:60], request.form.get("url", "").strip()
+                err = feeds.check_url(url) if name and url else "Enter a name and an https URL."
+                if err or len(f["sources"]) >= 10:
+                    flash(err or "At most 10 feeds.", "err")
+                else:
+                    f["sources"].append({"name": name, "url": url, "on": True})
+                    store.save(cfg)
+                    store.audit(me(), "feed added", url[:150], client_ip())
+                    flash("Feed added. Press Refresh now to download it.", "ok")
+            elif act == "remove":
+                try:
+                    del f["sources"][int(request.form.get("idx", -1))]
+                    store.save(cfg)
+                    store.audit(me(), "feed removed", "", client_ip())
+                except (ValueError, IndexError):
+                    pass
+            elif act == "refresh":
+                threading.Thread(target=background.run_feed_refresh, daemon=True).start()
+                flash("Refresh started; reload this page in a few seconds.", "ok")
+            elif act == "geo":
+                flash("Country data download started (about a minute)." if feeds.refresh_geo_async(background.geo_done) else "A download is already running.", "ok")
+            return redirect(url_for("intel"))
+        ip = request.args.get("ip", "").strip()
+        look = None
+        if ip:
+            look = {"ip": ip, "feed": feeds.is_listed(ip), "country": feeds.country_of(ip)}
+        return render_template("intel.html", f=f, geo=feeds.geo_status(), look=look, now=time.time())
 
 
 # --- logs / bans -------------------------------------------------------------------------------
@@ -670,10 +780,12 @@ def settings():
             try:
                 ab = {"enabled": bool(request.form.get("ab_enabled")), "threshold": int(request.form["ab_threshold"]),
                       "window_min": int(request.form["ab_window"]), "ban_min": int(request.form["ab_ban"])}
-                assert 1 <= ab["threshold"] <= 10000 and 1 <= ab["window_min"] <= 1440 and 1 <= ab["ban_min"] <= 525600
+                if not (1 <= ab["threshold"] <= 10000 and 1 <= ab["window_min"] <= 1440 and 1 <= ab["ban_min"] <= 525600):
+                    raise ValueError("auto-ban values out of range")
                 ret = int(request.form["retention"])
                 idle = int(request.form["idle"])
-                assert 1 <= ret <= 365 and 5 <= idle <= 480
+                if not (1 <= ret <= 365 and 5 <= idle <= 480):
+                    raise ValueError("retention 1-365 days, idle 5-480 minutes")
                 tp, nb = request.form.get("trusted_proxies", ""), request.form.get("never_ban", "")
                 pa, ua = request.form.get("panel_allow_ips", ""), request.form.get("upstream_allow", "")
                 for v in (tp, nb, pa):
@@ -684,11 +796,15 @@ def settings():
                 for h in engine.split_lines(ua):
                     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", h.lower()):
                         raise ValueError("allowed upstream suffixes must look like svc.cluster.local")
-            except (ValueError, KeyError, AssertionError) as e:
+            except (ValueError, KeyError) as e:
                 flash(f"Invalid settings: {e}", "err")
                 return redirect(url_for("settings"))
+            dd = {"auto": bool(request.form.get("dd_auto")), "rps_threshold": int(request.form["dd_rps"]),
+                  "window_s": int(request.form["dd_window"]), "hold_min": int(request.form["dd_hold"])}
+            if not (10 <= dd["rps_threshold"] <= 100000 and 5 <= dd["window_s"] <= 300 and 1 <= dd["hold_min"] <= 1440):
+                raise ValueError("flood defence values out of range")
             st.update({"autoban": ab, "retention_days": ret, "trusted_proxies": tp, "never_ban": nb, "panel_allow_ips": pa,
-                       "upstream_allow": ua, "session_idle_min": idle})
+                       "upstream_allow": ua, "session_idle_min": idle, "ddos": dd})
             apply_cfg(cfg, "settings saved")
             return redirect(url_for("settings"))
         return render_template("settings.html", st=st, users=list(cfg["users"]))
@@ -719,6 +835,7 @@ def password():
             flash(password_error(new, me()), "err")
         else:
             u["hash"] = generate_password_hash(new)
+            u["must_change"] = False
             store.save(cfg)
             end_session(all_for_user=me(), keep=session.get("sid"))   # sign out every other session
             store.audit(me(), "password changed", "other sessions signed out", client_ip())
@@ -726,8 +843,72 @@ def password():
     return redirect(url_for("settings"))
 
 
+
+# --- users and roles ---------------------------------------------------------------------------
+def _admins(cfg):
+    return [n for n, u in cfg["users"].items() if u.get("role", "admin") == "admin"]
+
+
+@app.route("/users", methods=["GET", "POST"])
+def users():
+    if role() != "admin":
+        abort(403)
+    with store._lock:
+        cfg = store.load()
+        if request.method == "POST":
+            act, name = request.form.get("act"), request.form.get("name", "").strip()
+            if act == "add":
+                pw, r = request.form.get("password", ""), request.form.get("role", "viewer")
+                if not USER_RE.match(name) or name in cfg["users"]:
+                    flash("User name: 3-32 letters, digits, . _ - and not already used.", "err")
+                elif r not in ("admin", "viewer"):
+                    flash("Role must be admin or viewer.", "err")
+                elif password_error(pw, name):
+                    flash(password_error(pw, name), "err")
+                else:
+                    cfg["users"][name] = {"hash": generate_password_hash(pw), "created": time.time(), "totp_secret": "", "totp_enabled": False,
+                                          "totp_last": 0, "recovery": [], "role": r, "must_change": True}
+                    store.save(cfg)
+                    store.audit(me(), "user added", f"{name} ({r})", client_ip())
+                    flash(f"User {name} created. They must choose a new password at first login.", "ok")
+            elif name in cfg["users"]:
+                u = cfg["users"][name]
+                if act == "delete":
+                    if name == me() or (u.get("role") == "admin" and len(_admins(cfg)) <= 1):
+                        flash("You cannot delete yourself or the last administrator.", "err")
+                    else:
+                        del cfg["users"][name]
+                        store.save(cfg)
+                        store.db().execute("DELETE FROM sessions WHERE user=?", (name,))
+                        store.db().commit()
+                        store.audit(me(), "user deleted", name, client_ip())
+                        flash(f"User {name} deleted.", "ok")
+                elif act == "role":
+                    r = request.form.get("role", "viewer")
+                    if r not in ("admin", "viewer") or (u.get("role") == "admin" and r != "admin" and len(_admins(cfg)) <= 1):
+                        flash("There must always be at least one administrator.", "err")
+                    else:
+                        u["role"] = r
+                        store.save(cfg)
+                        store.audit(me(), "role changed", f"{name} -> {r}", client_ip())
+                        flash(f"{name} is now {r}.", "ok")
+                elif act == "reset2fa":
+                    u.update({"totp_secret": "", "totp_enabled": False, "recovery": []})
+                    store.save(cfg)
+                    store.audit(me(), "2fa reset", name, client_ip())
+                    flash(f"Two-factor login reset for {name}.", "ok")
+                elif act == "signout":
+                    store.db().execute("DELETE FROM sessions WHERE user=?", (name,))
+                    store.db().commit()
+                    store.audit(me(), "sessions revoked", name, client_ip())
+                    flash(f"All sessions of {name} were signed out.", "ok")
+            return redirect(url_for("users"))
+        return render_template("users.html", users=cfg["users"], me=me())
+
 @app.route("/audit")
 def audit_view():
+    if role() != "admin":
+        abort(403)
     return render_template("audit.html", rows=store.db().execute("SELECT * FROM audit ORDER BY ts DESC LIMIT 300").fetchall())
 
 
@@ -755,7 +936,8 @@ def backup_import():
     f = request.files.get("file")
     try:
         data = json.loads(f.read().decode("utf-8"))
-        assert isinstance(data.get("sites"), list) and len(data["sites"]) <= 500
+        if not (isinstance(data.get("sites"), list) and len(data["sites"]) <= 500):
+            raise ValueError("not an export file")
     except Exception:  # noqa: BLE001
         flash("Not a valid ShieldWAF export file.", "err")
         return redirect(url_for("backup"))
@@ -767,10 +949,11 @@ def backup_import():
             for k in s:
                 if k in raw and isinstance(raw[k], type(s[k])):
                     s[k] = raw[k]
-            for k in ("rate_limit", "tls", "auth", "challenge"):          # nested dicts: merge onto defaults
+            for k in ("rate_limit", "tls", "auth", "challenge", "positive", "geo"):   # nested dicts: merge onto defaults
                 if isinstance(raw.get(k), dict):
                     s[k] = {**store.DEFAULT_SITE[k], **{kk: vv for kk, vv in raw[k].items() if kk in store.DEFAULT_SITE[k]}}
             s["auth"]["users"] = {}
+            s["under_attack"], s["ua_until"] = False, 0
             s["id"] = "s" + secrets.token_hex(3)
             s["tls"]["enabled"] = s["tls"]["enabled"] and s["tls"]["source"] == "mounted"   # uploaded keys are never exported
             cfg_probe = {"settings": cfg["settings"], "sites": new_sites}
@@ -811,6 +994,8 @@ def metrics():
               f'shieldwaf_waf_events_total{{action="detected"}} {ev.get("detected_events", 0)}',
               "# TYPE shieldwaf_sites gauge", f"shieldwaf_sites {len(cfg['sites'])}",
               "# TYPE shieldwaf_sites_in_maintenance gauge", f"shieldwaf_sites_in_maintenance {sum(1 for s in cfg['sites'] if s['maintenance'])}",
+              "# TYPE shieldwaf_sites_under_attack gauge", f"shieldwaf_sites_under_attack {sum(1 for s in cfg['sites'] if s['under_attack'])}",
+              "# TYPE shieldwaf_threat_feed_networks gauge", f"shieldwaf_threat_feed_networks {cfg['settings']['feeds']['last_count']}",
               "# TYPE shieldwaf_active_bans gauge", f"shieldwaf_active_bans {sum(1 for b in cfg['bans'] if b['until'] > time.time())}",
               "# TYPE shieldwaf_engine_up gauge", f"shieldwaf_engine_up {1 if engine_up() else 0}"]
     return Response("\n".join(lines) + "\n", mimetype="text/plain")

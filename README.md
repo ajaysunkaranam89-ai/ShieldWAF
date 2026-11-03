@@ -35,6 +35,11 @@ No secrets are stored in this repo: the admin account is created in your browser
 | **Login gate** | require user name + password in front of any site (users managed in the GUI, hashes only) |
 | **Maintenance mode** | one-click switch per site or all sites; the app keeps running; colourful editable page |
 | **Automatic service-down page** | friendly page when the app is unreachable; reloads itself and the app returns by itself |
+| **Positive security model** | per site: only the listed paths, content types and URL length are accepted; everything else is refused, whatever it contains (not pattern based) |
+| **IP reputation feeds** | Spamhaus DROP + FireHOL level 1 (or your own https lists), refreshed automatically; private/reserved ranges never loaded |
+| **Country rules** | per site allow/deny by registered country (free regional-registry data, no licence key) |
+| **Flood defence** | one-click **under-attack mode** (challenge for everyone + rate limit) and **automatic escalation** when a site exceeds a request-rate threshold ([`docs/DDOS.md`](docs/DDOS.md)) |
+| **Users and roles** | several administrators and read-only **viewers**; forced password change for new users; reset 2FA / revoke sessions |
 | **Rate limiting, IP control** | per-IP rate limit, per-site allow/deny lists, manual bans, **auto-ban** (like fail2ban), method allow-list |
 | **Hardening** | unknown hosts get no reply, no server version, strict timeouts/header limits, real client IP only from trusted proxies, security headers |
 | **Cloud safety** | upstream SSRF protection (no loopback / cloud-metadata targets), optional allowed-suffix list for upstreams |
@@ -46,8 +51,8 @@ No secrets are stored in this repo: the admin account is created in your browser
 
 ```bash
 # 1. build the image and load it into kind (for a real cluster push it to your registry, see docs/CLOUD.md)
-docker build -t shieldwaf:2.0 .
-kind load docker-image shieldwaf:2.0 --name mycluster
+docker build -t shieldwaf:2.1 .
+kind load docker-image shieldwaf:2.1 --name mycluster
 
 # 2. deploy
 kubectl apply -f k8s/shieldwaf.yaml
@@ -84,7 +89,9 @@ For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud u
 | **Pages** | edit the maintenance and service-down pages with live preview |
 | **Attack log** | filter by site, text, blocked / detected; OWASP rule id and score |
 | **IP bans** | manual and automatic bans |
-| **Settings** | panel allow-list, idle timeout, upstream restrictions, auto-ban, trusted proxies, metrics token, password |
+| **Threat intel** | reputation feeds, country data, address lookup |
+| **Users** | administrators and viewers (admin only) |
+| **Settings** | panel allow-list, idle timeout, upstream restrictions, flood defence, auto-ban, trusted proxies, metrics token, password |
 | **Security (2FA)** | enable/disable two-factor login |
 | **Audit trail** | who did what, from which IP |
 | **Backup** | export/import sites, settings and pages |
@@ -92,6 +99,10 @@ For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud u
 ![Sites](docs/images/gui-sites.png)
 ![Site settings: TLS, WAF, anti-bot, login gate](docs/images/gui-site_tls.png)
 ![Attack log](docs/images/gui-logs.png)
+![Positive security model, country rules, challenge, login gate](docs/images/gui-site_policy.png)
+![Threat intelligence](docs/images/gui-intel.png)
+![Users and roles](docs/images/gui-users.png)
+![Flood defence and settings](docs/images/gui-settings.png)
 ![Two-factor login](docs/images/gui-security.png)
 ![Sign in](docs/images/gui-login.png)
 
@@ -107,18 +118,20 @@ The two containers share only the `/data` volume: the panel writes a new generat
 reloads nginx, waits until the new generation answers, and reports in `reload.status`. If it fails the panel restores the previous generation.
 
 ## Test results (kind, notes app + python app as upstreams)
-An automated suite of **88 checks** covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
+An automated suite of **130 checks** (all passing on the final build) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
 recovery codes and replay refusal, session revocation after logout and after a password change, CSP/HSTS/cookie flags, metrics token,
 panel allow-list lock-out protection, SSRF refusal (loopback, metadata address and names, allowed-suffix list), import validation,
 13 attack types blocked, unknown-host drop, header-size and method limits, spoofed `X-Forwarded-For`, TLS (1.1 refused, 1.3 works,
 unknown-host handshake refused, HSTS, redirect), certificate upload (mismatched key refused, key never shown), login gate, anti-bot
 challenge (correct work, wrong work, forged seed, forged cookie, other browser, scope pages/all, exclusions), maintenance, service-down
-page, rate limiting, auto-ban, backup contents and audit trail. See [`SECURITY.md`](SECURITY.md) for the design and the limits.
+page, rate limiting, auto-ban, backup contents and audit trail, the positive security model, live reputation feeds, country rules (real address blocks), under-attack mode and its automatic escalation under a real flood, and the admin / viewer roles. Static analysis (Bandit), manifest and image scans (Trivy: 0 high/critical) and an OWASP ZAP baseline (0 failures) are in [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md). See [`SECURITY.md`](SECURITY.md) for the design and the limits.
 
 ## Limits (honest list)
-Not independently audited; OWASP rules are pattern-based (a determined attacker may bypass them; keep apps patched); no volumetric
-DDoS protection; single admin account and single replica; reload time grows with the number of sites (about half a second each);
-certificates are renewed by cert-manager, not by this product. Details in `SECURITY.md`.
+- **No independent audit.** A documented self-review is in [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md); get a third-party test before relying on it for high-value systems.
+- **Detection is partly pattern-based** (OWASP rules). The positive model, reputation feeds, country rules, challenge and flood defence add protection that does not depend on patterns, but keep your applications patched.
+- **No volumetric DDoS protection** (impossible inside a cluster); application-layer floods are handled; see [`docs/DDOS.md`](docs/DDOS.md) for what to put in front.
+- Single replica (no high availability); reload time grows with the number of sites (about half a second each); certificates are renewed by cert-manager, not by this product.
+Details in `SECURITY.md`.
 
 ## Comparison with SafeLine and BunkerWeb
 See [`COMPARISON.md`](COMPARISON.md).
@@ -130,5 +143,8 @@ See [`COMPARISON.md`](COMPARISON.md).
 | `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
 | `k8s/shieldwaf.yaml` | hardened namespace, volume, pod, services, network policies |
 | `SECURITY.md` | security design, limits, operator duties |
+| `docs/SECURITY-REVIEW.md` | self-review: scans, scanner baseline, findings and fixes |
 | `docs/CLOUD.md` | running it in the cloud |
+| `docs/DDOS.md` | denial-of-service defence: what the WAF does, what must sit in front |
+| `.github/workflows/security.yml` | CI: Bandit, Trivy (config + image), hadolint |
 | `docs/` | logo and GUI screenshots |

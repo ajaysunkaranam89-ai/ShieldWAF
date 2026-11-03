@@ -5,11 +5,11 @@ Read [`../SECURITY.md`](../SECURITY.md) first. This page only covers the cloud-s
 ## 1. Image
 Build once, push to **your private registry**, and reference it by digest.
 ```bash
-docker build -t <registry>/a-shield-waf:2.0 .
-docker push <registry>/a-shield-waf:2.0
+docker build -t <registry>/a-shield-waf:2.1 .
+docker push <registry>/a-shield-waf:2.1
 # then set image: <registry>/a-shield-waf@sha256:<digest> in k8s/shieldwaf.yaml (both containers) and imagePullSecrets if needed
 ```
-Scan it before every release: `trivy image --severity HIGH,CRITICAL --ignore-unfixed <registry>/a-shield-waf:2.0`.
+Scan it before every release: `trivy image --severity HIGH,CRITICAL --ignore-unfixed <registry>/a-shield-waf:2.1`.
 
 ## 2. Storage
 The PVC (`shieldwaf-data`) holds the configuration, logs, certificates and the audit trail. Use an encrypted storage class

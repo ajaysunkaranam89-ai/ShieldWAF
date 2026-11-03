@@ -51,7 +51,7 @@ def new_recovery_codes(n=8):
 # ----------------------------------------------------------------------------------------- passwords for the site gate
 def crypt_hash(password):
     """SHA-512 crypt ($6$) via the openssl binary (password goes through stdin, never the command line)."""
-    r = subprocess.run(["openssl", "passwd", "-6", "-stdin"], input=password, capture_output=True, text=True, timeout=15)
+    r = subprocess.run(["/usr/bin/openssl", "passwd", "-6", "-stdin"], input=password, capture_output=True, text=True, timeout=15)
     h = r.stdout.strip()
     if r.returncode != 0 or not h.startswith("$6$"):
         raise RuntimeError("password hashing failed")
@@ -111,7 +111,7 @@ def cert_info(cert_file):
     """Subject / expiry of a certificate file, or None."""
     if not cert_file or not os.path.exists(cert_file):
         return None
-    r = _run(["openssl", "x509", "-noout", "-subject", "-enddate", "-in", cert_file])
+    r = _run(["/usr/bin/openssl", "x509", "-noout", "-subject", "-enddate", "-in", cert_file])
     if r.returncode != 0:
         return None
     info = dict(l.split("=", 1) for l in r.stdout.strip().splitlines() if "=" in l)
@@ -123,11 +123,11 @@ def cert_info(cert_file):
 
 
 def _pubkey_of_cert(path):
-    return _run(["openssl", "x509", "-noout", "-pubkey", "-in", path]).stdout
+    return _run(["/usr/bin/openssl", "x509", "-noout", "-pubkey", "-in", path]).stdout
 
 
 def _pubkey_of_key(path):
-    return _run(["openssl", "pkey", "-pubout", "-in", path]).stdout
+    return _run(["/usr/bin/openssl", "pkey", "-pubout", "-in", path]).stdout
 
 
 def install_pair(site_id, cert_pem, key_pem):
@@ -169,7 +169,7 @@ def make_selfsigned(site_id, host, days=365):
     key, crt = os.path.join(d, "privkey.pem"), os.path.join(d, "fullchain.pem")
     fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.close(fd)
-    r = _run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", str(days),
+    r = _run(["/usr/bin/openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", str(days),
               "-subj", f"/CN={host.lstrip('*.')}", "-addext", f"subjectAltName={san}", "-keyout", key, "-out", crt])
     os.chmod(key, 0o600)
     return None if r.returncode == 0 else "openssl failed: " + r.stderr[-200:]
@@ -184,7 +184,7 @@ def ensure_default_cert(name="default", cn="shieldwaf.local"):
     key, crt = os.path.join(d, "privkey.pem"), os.path.join(d, "fullchain.pem")
     fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.close(fd)
-    _run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "825",
+    _run(["/usr/bin/openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "825",
           "-subj", f"/CN={cn}", "-addext", f"subjectAltName=DNS:{cn},DNS:localhost,IP:127.0.0.1", "-keyout", key, "-out", crt])
     os.chmod(key, 0o600)
     return d

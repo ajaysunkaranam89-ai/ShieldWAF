@@ -16,6 +16,10 @@ you must do on your side. Read the last two sections before using it in producti
 | Anti-bot | proof-of-work challenge; the pass is an HMAC bound to client IP + browser + host + expiry; forged, replayed or foreign cookies are refused |
 | Login gate | HTTP basic auth with SHA-512 crypt hashes; passwords never leave the GUI form |
 | Rate limiting, IP lists, auto-ban | per site / global |
+| **Positive security model** | per site: only listed paths, content types and URL lengths are accepted, everything else is refused (403 / 415 / 414). This is not pattern matching: unknown attacks against paths the application does not use never reach it |
+| **IP reputation feeds** | Spamhaus DROP and FireHOL level 1 (or your own https lists) refreshed every few hours; listed addresses are refused before any rule runs; private/reserved/very broad ranges and your own admin/proxy addresses are never loaded |
+| **Country rules** | per site allow or deny by registered country (data from the five regional internet registries, no licence key) |
+| **Application-layer flood defence** | one-click **under-attack mode** (challenge for everyone + rate limit) and **automatic escalation** when a site exceeds a request-rate threshold; see `docs/DDOS.md` |
 | Upstream (SSRF) protection | loopback, link-local and cloud-metadata addresses are refused; optional allowed-suffix list (for example `svc.cluster.local`) |
 
 ### The control panel (admin GUI)
@@ -29,6 +33,7 @@ you must do on your side. Read the last two sections before using it in producti
 | Sessions | server-side and revocable, idle timeout (default 30 min), absolute 8 h, cookie `__Host-`, Secure, HttpOnly, SameSite=Strict; password change signs out all other sessions |
 | Browser protections | CSRF token on every POST, CSP without inline scripts, X-Frame-Options DENY, COOP/CORP, no caching |
 | Network | optional IP allow-list for the panel (the panel refuses a rule that would lock you out) |
+| Roles | **administrator** and read-only **viewer**; viewers cannot change anything or see users, audit trail or backups; new users must choose their own password at first login; the last administrator cannot be deleted or demoted; admins can reset 2FA and revoke sessions |
 | Metrics | `/metrics` needs a bearer token |
 | Audit | every admin action and every login failure with the source IP |
 | Config import | every imported site is re-validated like a form submission (an import cannot smuggle in a metadata-address upstream or an nginx directive) |
@@ -42,10 +47,10 @@ the data volume (no shared process namespace, no signals); resource limits; Netw
 egress to cloud-metadata addresses; base image pinned by digest; image scanned with Trivy.
 
 ## What it does NOT do (be honest with your auditors)
-- It is **not a certified or independently audited product.** It was built and tested by its author; it has not had a third-party penetration test or code review. Do that before relying on it for regulated or high-value systems.
-- Detection uses the OWASP rule set (patterns and scoring). A determined attacker may find bypasses that commercial semantic engines or machine-learning WAFs catch. Run it in detect mode first, tune, then block, and keep your applications patched: a WAF reduces risk, it does not fix vulnerable code.
-- **No volumetric DDoS protection.** Use your cloud provider's network protection or a CDN in front.
-- Single admin account and a single replica (no high availability); the data volume is a single point of failure, so back it up.
+- It is **not a certified or independently audited product.** An independent audit can only be done by someone other than the author. What exists is a documented **self-review** (`docs/SECURITY-REVIEW.md`: static analysis, manifest and image scans, a web-scanner baseline, 100+ automated attack and abuse tests, all fixed or explained) and a CI workflow that repeats the scans. Commission a third-party penetration test and code review before relying on it for regulated or high-value systems.
+- The OWASP rule set is pattern-based, so a determined attacker may find bypasses that a commercial semantic engine catches. This is reduced, not removed: the positive security model, reputation feeds, country rules, the anti-bot challenge and flood defence do not depend on attack patterns. Run new sites in detect mode first, tune, then block, and keep your applications patched: a WAF reduces risk, it does not fix vulnerable code.
+- **No volumetric DDoS protection.** That is physically impossible inside a cluster: the link is full before traffic reaches any pod. Only application-layer floods are handled here; put your cloud provider's DDoS protection or a CDN in front (`docs/DDOS.md`).
+- A single replica (no high availability); the data volume is a single point of failure, so back it up and plan maintenance windows. Several administrators and viewers are supported.
 - No FIPS-validated cryptography and no hardware key (WebAuthn) support; two-factor is TOTP.
 - The anti-bot challenge stops simple bots and scripts that cannot run JavaScript; it is not a defence against attackers driving real browsers.
 - Login-gate passwords use SHA-512 crypt (strong, slow) but the gate is basic authentication; use it over HTTPS only.

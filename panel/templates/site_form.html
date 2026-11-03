@@ -77,6 +77,21 @@
 </div>
 
 <div class="card" style="margin-top:14px">
+  <b>Positive security model</b> <span class="hint">&middot; instead of looking for bad patterns, allow only what the application really uses; everything else is refused</span>
+  <label class="chk"><input type="checkbox" name="pos_enabled" {{ 'checked' if s.positive.enabled }}> Allow only the paths, content types and URL length listed here</label>
+  <label>Allowed paths <small>one per line: <span class="mono">/api/</span> = anything starting with it, <span class="mono">=/</span> = exactly the home page</small></label>
+  <textarea name="pos_paths" placeholder="=/&#10;/api/&#10;/static/">{{ s.positive.paths }}</textarea>
+  <div class="row"><div><label>Allowed request content types <small>(space separated; empty = any)</small></label><input type="text" name="pos_types" value="{{ s.positive.content_types }}"></div>
+  <div><label>Longest URL (characters)</label><input type="number" name="pos_max_url" min="64" max="8000" value="{{ s.positive.max_url }}"></div></div>
+  <p class="hint">Test in a copy of the site first: a path you forgot to list returns 403, a wrong content type returns 415, a very long URL returns 414.</p>
+</div>
+<div class="card" style="margin-top:14px">
+  <b>Country rules</b> <span class="hint">&middot; needs the country data from the Threat intel page</span>
+  <div class="row"><div><label>Mode</label><select name="geo_mode"><option value="off" {{ 'selected' if s.geo.mode=='off' }}>off</option>
+    <option value="deny" {{ 'selected' if s.geo.mode=='deny' }}>block these countries</option><option value="allow" {{ 'selected' if s.geo.mode=='allow' }}>allow only these countries (private networks always allowed)</option></select></div>
+  <div><label>Country codes <small>(two letters, space separated)</small></label><input type="text" name="geo_countries" value="{{ s.geo.countries }}" placeholder="CN RU"></div></div>
+</div>
+<div class="card" style="margin-top:14px">
   <b>Access control</b>
   <div class="row">
     <div><label>Allow-list <small>only these IPs/CIDRs may connect (empty = everyone)</small></label><textarea name="allow_ips">{{ s.allow_ips|join('\n') }}</textarea></div>

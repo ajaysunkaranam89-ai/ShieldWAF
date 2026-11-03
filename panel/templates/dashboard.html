@@ -4,6 +4,7 @@
 <p class="sub">Last 24 hours &middot; engine:
   {% if up %}<span class="pill p-ok">running</span>{% else %}<span class="pill p-err">not responding</span>{% endif %}
   {% if maint %}&middot; <span class="pill p-warn">{{ maint }} site(s) in maintenance</span>{% endif %}
+  {% if under %}&middot; <span class="pill p-err">{{ under }} site(s) UNDER ATTACK mode</span>{% endif %}
   {% if bans %}&middot; <span class="pill p-info">{{ bans }} active ban(s)</span>{% endif %}</p>
 {% for w in warn %}<div class="flash err">{{ w }}</div>{% endfor %}
 <div class="grid g4">
