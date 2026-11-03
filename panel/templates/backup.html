@@ -1,4 +1,4 @@
-{% extends "base.html" %}{% block title %}Backup - ShieldWAF{% endblock %}
+{% extends "base.html" %}{% block title %}Backup - A Shield WAF{% endblock %}
 {% block body %}
 <h1>Backup &amp; restore</h1>
 <p class="sub">Export sites, settings and pages as a JSON file (the admin password and bans are never included). Keep it in git to rebuild the firewall anywhere.</p>
@@ -6,7 +6,7 @@
  <div class="card"><b>Export</b><p class="hint">Downloads <span class="mono">shieldwaf-config.json</span>.</p><a class="btn" href="{{ url_for('backup_export') }}">Download config</a></div>
  <div class="card"><b>Import</b><p class="hint">Replaces all sites and pages with the file's content. The engine tests it first; if it is rejected nothing changes.</p>
   <form method="post" action="{{ url_for('backup_import') }}" enctype="multipart/form-data"><input type="hidden" name="_csrf" value="{{ csrf() }}">
-  <input type="file" name="file" accept="application/json" required> <button class="btn warn" onclick="return confirm('Replace all sites with this file?')">Import</button></form></div>
+  <input type="file" name="file" accept="application/json" required> <button class="btn warn" data-confirm="Replace all sites with this file?">Import</button></form></div>
 </div>
-<div class="card" style="margin-top:14px"><b>Prometheus metrics</b><p class="hint">Scrape <span class="mono">http://shieldwaf-panel:9000/metrics</span> (requests by status, WAF events, sites, bans, engine up).</p></div>
+<div class="card" style="margin-top:14px"><b>Prometheus metrics</b><p class="hint">Scrape <span class="mono">https://shieldwaf-panel:9000/metrics</span> with the header <span class="mono">Authorization: Bearer &lt;token&gt;</span> (create the token under Settings).</p></div>
 {% endblock %}

@@ -1,10 +1,18 @@
-# ShieldWAF on Kubernetes: one pod = engine (nginx+ModSecurity+OWASP CRS) + panel (GUI), sharing a data volume.
-# Build and load the image first (see README): docker build -t shieldwaf:1.0 . ; kind load docker-image shieldwaf:1.0 --name mycluster
+# ShieldWAF 2.0 on Kubernetes: one pod = engine (nginx + ModSecurity + OWASP CRS) + panel (HTTPS GUI), sharing only a data volume.
+# Build and load the image first (see README): docker build -t shieldwaf:2.0 . ; kind load docker-image shieldwaf:2.0 --name mycluster
 # No secrets are stored here: the admin account is created in the browser on first start.
+#
+# Hardening in this file: "restricted" Pod Security level, non-root, read-only root filesystem, all capabilities dropped,
+# seccomp RuntimeDefault, no service-account token, resource limits, NetworkPolicy (default deny + explicit allows),
+# no process-namespace sharing between the two containers.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: shieldwaf
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -15,7 +23,7 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 1Gi
+      storage: 2Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,23 +42,38 @@ spec:
       labels:
         app: shieldwaf
     spec:
-      shareProcessNamespace: true        # lets the panel signal the nginx master to reload
+      automountServiceAccountToken: false      # the WAF never talks to the Kubernetes API
       securityContext:
+        runAsNonRoot: true
         runAsUser: 101
         runAsGroup: 101
         fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: engine
-          image: shieldwaf:1.0
+          image: shieldwaf:2.0
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/engine-entrypoint.sh"]
           ports:
             - containerPort: 8080
+            - containerPort: 8443
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           readinessProbe:
             httpGet:
               path: /__shieldwaf_health
               port: 8080
             periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /__shieldwaf_health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 20
           resources:
             requests:
               cpu: 50m
@@ -60,16 +83,34 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp-engine
+              mountPath: /tmp
+            # - name: certs                      # optional: cert-manager secrets, one folder per certificate (see docs/CLOUD.md)
+            #   mountPath: /certs
+            #   readOnly: true
         - name: panel
-          image: shieldwaf:1.0
+          image: shieldwaf:2.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           readinessProbe:
             httpGet:
               path: /healthz
               port: 9000
+              scheme: HTTPS
             periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 20
           resources:
             requests:
               cpu: 20m
@@ -79,15 +120,35 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp-panel
+              mountPath: /tmp
+            # - name: certs
+            #   mountPath: /certs
+            #   readOnly: true
+            # - name: panel-tls                  # optional: your own certificate for the admin panel (tls.crt / tls.key)
+            #   mountPath: /panel-tls
+            #   readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: shieldwaf-data
+        - name: tmp-engine
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp-panel
+          emptyDir:
+            sizeLimit: 256Mi
+        # - name: certs
+        #   projected:
+        #     sources:
+        #       - secret: { name: notes-tls, items: [ {key: tls.crt, path: notes-tls/tls.crt}, {key: tls.key, path: notes-tls/tls.key} ] }
+        # - name: panel-tls
+        #   secret: { secretName: shieldwaf-panel-tls }
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: shieldwaf-proxy          # the protected traffic (clients -> WAF -> apps)
+  name: shieldwaf-proxy          # the protected traffic (clients -> WAF -> apps); in the cloud put a LoadBalancer in front of 80/443 only
   namespace: shieldwaf
 spec:
   selector:
@@ -96,16 +157,63 @@ spec:
     - name: http
       port: 8080
       targetPort: 8080
+    - name: https
+      port: 8443
+      targetPort: 8443
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: shieldwaf-panel          # the GUI + /metrics
+  name: shieldwaf-panel          # the admin GUI (HTTPS) + /metrics (token). Keep it ClusterIP: never expose it to the internet.
   namespace: shieldwaf
 spec:
   selector:
     app: shieldwaf
   ports:
-    - name: http
+    - name: https
       port: 9000
       targetPort: 9000
+---
+# Default deny, then allow only what is needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-default-deny
+  namespace: shieldwaf
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-allow
+  namespace: shieldwaf
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - ports:                       # protected traffic from anywhere (restrict `from:` to your load balancer range in production)
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8443 }
+    - from:                        # admin panel: only from pods in namespaces labelled shieldwaf-admin=true
+        - namespaceSelector:
+            matchLabels:
+              shieldwaf-admin: "true"
+      ports:
+        - { protocol: TCP, port: 9000 }
+  egress:
+    - to:                          # DNS
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:                          # the applications behind the WAF; never the cloud metadata service or other link-local targets
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["169.254.0.0/16", "100.100.100.200/32"]

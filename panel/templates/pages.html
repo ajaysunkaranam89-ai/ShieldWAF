@@ -1,25 +1,19 @@
-{% extends "base.html" %}{% block title %}Pages - ShieldWAF{% endblock %}
+{% extends "base.html" %}{% block title %}Pages - A Shield WAF{% endblock %}
 {% block body %}
 <h1>Visitor pages</h1>
 <p class="sub">The two pages visitors can see. Edit the HTML, check the live preview, then save. Leave a box empty to use the built-in colourful default. <span class="mono">{{ '{{SITE}}' }}</span> becomes the site's host name.</p>
 <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}">
 <div class="grid g2">
  <div class="card"><b>Maintenance page</b> <span class="hint">shown while a site is in maintenance mode (HTTP 503)</span>
-   <label>HTML <small>(empty = default)</small></label><textarea id="m" name="maintenance" style="min-height:200px" oninput="pv('m','pm')">{{ cfg.pages.maintenance }}</textarea>
-   <p><button class="btn sec sm" name="reset" value="maintenance">Reset to default</button> <button type="button" class="btn sec sm" onclick="fillDef('m','dm','pm')">Load default into editor</button></p>
+   <label>HTML <small>(empty = default)</small></label><textarea id="m" name="maintenance" style="min-height:200px" data-preview data-frame="pm" data-default="dm">{{ cfg.pages.maintenance }}</textarea>
+   <p><button class="btn sec sm" name="reset" value="maintenance">Reset to default</button> <button type="button" class="btn sec sm" data-fill="m" data-default="dm">Load default into editor</button></p>
    <iframe class="prev" id="pm" sandbox=""></iframe></div>
  <div class="card"><b>Service-down page</b> <span class="hint">shown automatically when the app cannot be reached; it reloads itself every 10 s</span>
-   <label>HTML <small>(empty = default)</small></label><textarea id="d" name="down" style="min-height:200px" oninput="pv('d','pd')">{{ cfg.pages.down }}</textarea>
-   <p><button class="btn sec sm" name="reset" value="down">Reset to default</button> <button type="button" class="btn sec sm" onclick="fillDef('d','dd','pd')">Load default into editor</button></p>
+   <label>HTML <small>(empty = default)</small></label><textarea id="d" name="down" style="min-height:200px" data-preview data-frame="pd" data-default="dd">{{ cfg.pages.down }}</textarea>
+   <p><button class="btn sec sm" name="reset" value="down">Reset to default</button> <button type="button" class="btn sec sm" data-fill="d" data-default="dd">Load default into editor</button></p>
    <iframe class="prev" id="pd" sandbox=""></iframe></div>
 </div>
 <p style="margin-top:14px"><button class="btn">Save pages</button></p>
 </form>
 <textarea id="dm" hidden>{{ dm }}</textarea><textarea id="dd" hidden>{{ dd }}</textarea>
-<script>
-function pv(src, frame){var v=document.getElementById(src).value; if(!v.trim()){v=document.getElementById(src==='m'?'dm':'dd').value}
-  document.getElementById(frame).srcdoc=v.split('{{ '{{SITE}}' }}').join('example.com').replace(/<meta http-equiv="refresh"[^>]*>/gi,'');}
-function fillDef(src, def, frame){document.getElementById(src).value=document.getElementById(def).value; pv(src,frame);}
-pv('m','pm'); pv('d','pd');
-</script>
 {% endblock %}

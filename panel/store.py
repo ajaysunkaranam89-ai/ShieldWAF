@@ -16,6 +16,10 @@ DEFAULT_SETTINGS = {
     "never_ban": "127.0.0.1",       # IPs/CIDRs the auto-ban must never ban
     "autoban": {"enabled": False, "threshold": 10, "window_min": 5, "ban_min": 30},
     "retention_days": 7,
+    "panel_allow_ips": "",          # CIDRs allowed to reach the admin panel (empty = anyone who can reach the port)
+    "upstream_allow": "",           # if set, upstream host names must end with one of these suffixes (one per line)
+    "metrics_token": "",            # bearer token required for /metrics (generated at first start)
+    "session_idle_min": 30,
 }
 
 DEFAULT_SITE = {
@@ -29,6 +33,11 @@ DEFAULT_SITE = {
     "allow_ips": [], "deny_ips": [],
     "block_bots": True, "sec_headers": True,
     "max_body_mb": 10,
+    "methods": "GET HEAD POST PUT DELETE PATCH OPTIONS",
+    "tls": {"enabled": False, "source": "none",       # none | uploaded | selfsigned | mounted
+            "redirect_http": True, "redirect_port": "", "hsts": True, "hsts_days": 365, "mounted_name": ""},
+    "auth": {"enabled": False, "realm": "Restricted", "users": {}},      # users: name -> crypt hash (never shown)
+    "challenge": {"enabled": False, "difficulty": 4, "ttl_hours": 12, "scope": "pages", "exclude_paths": ""},
     "exclusions": [],               # [{"rule": "942100", "path": "/api/upload"}]  (path optional)
     "custom_rules": "",
     "page_maint": "", "page_down": "",   # per-site override HTML (empty = use global page)
@@ -90,16 +99,23 @@ def init_db():
     CREATE INDEX IF NOT EXISTS ev_ts ON events(ts);
     CREATE TABLE IF NOT EXISTS access(ts REAL, ip TEXT, host TEXT, status INTEGER, rt REAL);
     CREATE INDEX IF NOT EXISTS ac_ts ON access(ts);
-    CREATE TABLE IF NOT EXISTS audit(ts REAL, user TEXT, action TEXT, detail TEXT);
+    CREATE TABLE IF NOT EXISTS audit(ts REAL, user TEXT, action TEXT, detail TEXT, ip TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, user TEXT, created REAL, last REAL, ip TEXT);
+    CREATE TABLE IF NOT EXISTS login_fail(ts REAL, user TEXT, ip TEXT);
+    CREATE INDEX IF NOT EXISTS lf_ts ON login_fail(ts);
     CREATE TABLE IF NOT EXISTS counters(k TEXT PRIMARY KEY, v INTEGER);
     """)
+    try:    # upgrade path from v1.0 (audit table without the ip column)
+        con.execute("ALTER TABLE audit ADD COLUMN ip TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     con.commit()
 
 
-def audit(user, action, detail=""):
+def audit(user, action, detail="", ip=""):
     con = db()
-    con.execute("INSERT INTO audit VALUES(?,?,?,?)", (time.time(), user, action, detail[:500]))
+    con.execute("INSERT INTO audit VALUES(?,?,?,?,?)", (time.time(), user, action, detail[:500], ip))
     con.commit()
 
 

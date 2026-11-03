@@ -1,4 +1,4 @@
-{% extends "base.html" %}{% block title %}{{ 'Add' if new else 'Edit' }} site - ShieldWAF{% endblock %}
+{% extends "base.html" %}{% block title %}{{ 'Add' if new else 'Edit' }} site - A Shield WAF{% endblock %}
 {% block body %}
 <h1>{{ 'Add site' if new else 'Edit ' ~ s.host }}</h1>
 <p class="sub">Changes are tested with <span class="mono">nginx -t</span> first; if the engine rejects them, the old config stays active.</p>
@@ -7,12 +7,34 @@
   <b>Basics</b>
   <div class="row">
     <div><label>Host name <small>clients use this</small></label><input type="text" name="host" value="{{ s.host }}" placeholder="app.example.com" required></div>
-    <div><label>Upstream <small>where requests go</small></label><input type="text" name="upstream" value="{{ s.upstream }}" required></div>
+    <div><label>Upstream <small>where requests go (loopback / metadata addresses are refused)</small></label><input type="text" name="upstream" value="{{ s.upstream }}" required></div>
   </div>
   <label class="chk"><input type="checkbox" name="enabled" {{ 'checked' if s.enabled }}> Site enabled</label>
   <label class="chk"><input type="checkbox" name="maintenance" {{ 'checked' if s.maintenance }}> <b>Maintenance mode</b> (every visitor gets the maintenance page, the app keeps running)</label>
   <label class="chk"><input type="checkbox" name="down_page" {{ 'checked' if s.down_page }}> Show the "service is down" page automatically when the app is unreachable (502/503/504)</label>
 </div>
+
+<div class="card" style="margin-top:14px">
+  <b>TLS / HTTPS</b> <span class="hint">&middot; terminate TLS 1.2/1.3 here with modern ciphers only</span>
+  <label class="chk"><input type="checkbox" name="tls_enabled" {{ 'checked' if s.tls.enabled }}> Serve this site over HTTPS</label>
+  <div class="row">
+    <div><label>Certificate source</label><select name="tls_source" id="tls_source">
+      <option value="uploaded" {{ 'selected' if s.tls.source=='uploaded' }}>upload certificate + key</option>
+      <option value="selfsigned" {{ 'selected' if s.tls.source=='selfsigned' }}>self-signed (testing only)</option>
+      <option value="mounted" {{ 'selected' if s.tls.source=='mounted' }}>mounted secret (cert-manager)</option>
+      <option value="none" {{ 'selected' if s.tls.source=='none' }}>none</option></select></div>
+    <div data-tls="mounted"><label>Mounted certificate name <small>/certs/&lt;name&gt;/tls.crt</small></label><input type="text" name="tls_mounted_name" value="{{ s.tls.mounted_name }}" placeholder="notes-tls"></div>
+    <div><label>HSTS days</label><input type="number" name="tls_hsts_days" min="1" max="730" value="{{ s.tls.hsts_days }}"></div>
+  </div>
+  <label class="chk"><input type="checkbox" name="tls_hsts" {{ 'checked' if s.tls.hsts }}> Send HSTS (browsers will only use HTTPS for this site)</label>
+  <label class="chk"><input type="checkbox" name="tls_redirect" {{ 'checked' if s.tls.redirect_http }}> Redirect HTTP to HTTPS</label>
+  <div class="row"><div><label>Public HTTPS port for the redirect <small>(empty = 443)</small></label><input type="text" name="tls_redirect_port" value="{{ s.tls.redirect_port }}" placeholder="443"></div></div>
+  {% if cinfo %}<p class="hint">Current certificate: <span class="mono">{{ cinfo.subject }}</span> &middot; expires in <b>{{ cinfo.days_left }}</b> days</p>{% endif %}
+  <div data-tls="uploaded"><label>Certificate chain (PEM) <small>leave empty to keep the current one</small></label><textarea name="cert_pem" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+  <label>Private key (PEM, not password protected) <small>never shown again after saving</small></label><textarea name="key_pem" placeholder="-----BEGIN PRIVATE KEY-----" autocomplete="off"></textarea></div>
+  <label class="chk" data-tls="selfsigned"><input type="checkbox" name="tls_generate"> Generate a new self-signed certificate on save</label>
+</div>
+
 <div class="card" style="margin-top:14px">
   <b>Web application firewall (ModSecurity + OWASP Core Rule Set)</b>
   <div class="row">
@@ -24,6 +46,8 @@
     <div><label>Block threshold <small>anomaly score, default 5</small></label><input type="number" name="threshold" min="1" max="100" value="{{ s.threshold }}"></div>
     <div><label>Max request body (MB)</label><input type="number" name="max_body_mb" min="1" max="1024" value="{{ s.max_body_mb }}"></div>
   </div>
+  <label>Allowed HTTP methods <small>anything else gets 405</small></label>
+  <div style="display:flex;gap:16px;flex-wrap:wrap">{% for m in all_methods %}<label class="chk"><input type="checkbox" name="methods" value="{{ m }}" {{ 'checked' if m in s.methods.split() }}> {{ m }}</label>{% endfor %}</div>
   <label>Rule exclusions <small>(false-positive tuning) one per line: <span class="mono">RULEID</span> or <span class="mono">RULEID /path</span></small></label>
   <textarea name="exclusions" placeholder="942100&#10;920420 /api/upload">{% for e in s.exclusions %}{{ e.rule }}{{ ' ' ~ e.path if e.path }}
 {% endfor %}</textarea>
@@ -31,6 +55,27 @@
     <textarea name="custom_rules" placeholder='SecRule REQUEST_URI "@beginsWith /admin" "id:1200001,phase:1,deny,status:403,msg:admin blocked"'>{{ s.custom_rules }}</textarea>
     <p class="hint">Raw SecRule lines, loaded before the OWASP rules. Use rule ids 1000000+. No Include directive. Invalid rules are rejected by the engine test.</p></details>
 </div>
+
+<div class="card" style="margin-top:14px">
+  <b>Anti-bot challenge</b> <span class="hint">&middot; visitors must solve a small proof-of-work puzzle in the browser once; bots and scripts that cannot run JavaScript are stopped</span>
+  <label class="chk"><input type="checkbox" name="chal_enabled" {{ 'checked' if s.challenge.enabled }}> Require the challenge for this site</label>
+  <div class="row">
+    <div><label>Difficulty <small>3 instant .. 5 about 1 s .. 6 slow</small></label><input type="number" name="chal_difficulty" min="3" max="6" value="{{ s.challenge.difficulty }}"></div>
+    <div><label>Pass valid for (hours)</label><input type="number" name="chal_ttl" min="1" max="720" value="{{ s.challenge.ttl_hours }}"></div>
+    <div><label>Applies to</label><select name="chal_scope"><option value="pages" {{ 'selected' if s.challenge.scope=='pages' }}>browser page loads only (APIs untouched)</option><option value="all" {{ 'selected' if s.challenge.scope=='all' }}>every request (strict; exclude API paths below)</option></select></div>
+  </div>
+  <label>Paths that never get the challenge <small>(one per line, e.g. /api/ or /health)</small></label><textarea name="chal_exclude">{{ s.challenge.exclude_paths }}</textarea>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <b>Login gate</b> <span class="hint">&middot; require a user name and password before anyone can reach the site (HTTP basic authentication). Use it over HTTPS.</span>
+  <label class="chk"><input type="checkbox" name="auth_enabled" {{ 'checked' if s.auth.enabled }}> Require login</label>
+  <div class="row"><div><label>Login prompt text</label><input type="text" name="auth_realm" value="{{ s.auth.realm }}"></div></div>
+  {% if s.auth.users %}<p class="hint">Current users (passwords are stored hashed and cannot be shown): {% for u in s.auth.users %}<label class="chk" style="display:inline-flex;margin-right:14px"><input type="checkbox" name="auth_remove" value="{{ u }}"> remove <b>{{ u }}</b></label>{% endfor %}</p>{% endif %}
+  <div class="row"><div><label>Add user</label><input type="text" name="auth_user_new" autocomplete="off" placeholder="user name"></div>
+  <div><label>Password <small>(10+ characters)</small></label><input type="password" name="auth_pass_new" autocomplete="new-password"></div></div>
+</div>
+
 <div class="card" style="margin-top:14px">
   <b>Access control</b>
   <div class="row">

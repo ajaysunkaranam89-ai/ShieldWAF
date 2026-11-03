@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block title %}Recovery codes - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Two-factor login enabled</h1>
+<div class="flash ok">Save these recovery codes now. They are shown <b>only once</b>. Each code works one time if you lose your phone.</div>
+<div class="card"><p class="mono" style="font-size:18px;line-height:2;user-select:all">{% for c in codes %}{{ c }}<br>{% endfor %}</p>
+<p class="hint">Store them in a password manager or a safe place. Anyone with a code and your password can sign in.</p>
+<a class="btn" href="{{ url_for('dashboard') }}">I saved them, continue</a></div>
+{% endblock %}

@@ -1,49 +1,53 @@
-# ShieldWAF: an open-source web firewall with a GUI, for Kubernetes
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-full.svg">
+    <img src="docs/logo-full-light.svg" alt="A Shield WAF" width="560">
+  </picture>
+</p>
 
-ShieldWAF combines proven free components into one product with one web GUI:
+# A Shield WAF
 
-- **Engine:** nginx + **ModSecurity v3** + the **OWASP Core Rule Set** (the rules used by most commercial WAFs).
-- **Control panel (GUI):** a small Python (Flask) web app: sites, per-site maintenance switch, page editor, rate limits,
-  IP lists, auto-ban, attack log, dashboard, audit trail, backup, Prometheus metrics.
-- **Runs as one pod, two containers** (engine + panel) sharing a small volume. About **230 MB RAM** with four sites loaded.
+An open-source **web application firewall with a web GUI**, built for Kubernetes and for the cloud. It combines proven free components
+into one product:
 
-Everything is free and open source. Built and tested on the kind cluster `mycluster`. No secrets are stored in this repo: the admin account is created in the browser on first start.
+- **Engine:** nginx + **ModSecurity v3** + the **OWASP Core Rule Set**, with TLS termination and an anti-bot challenge.
+- **Control panel (GUI):** HTTPS-only web app: sites, TLS certificates, maintenance switch, page editor, login gate, rate limits,
+  IP lists, auto-ban, attack log, dashboard, two-factor login, audit trail, backup, Prometheus metrics.
+- **One pod, two containers**, hardened (non-root, read-only filesystem, no capabilities, network policy). About 230 MB RAM with four sites.
+
+Free and open source. Built and tested on the kind cluster `mycluster`; cloud guide in [`docs/CLOUD.md`](docs/CLOUD.md).
+No secrets are stored in this repo: the admin account is created in your browser on first start.
+
+> **Read [`SECURITY.md`](SECURITY.md) before production use.** It lists what is protected, what is *not*, and what you must do.
+> This product has not had an independent security audit.
 
 ![Dashboard](docs/images/gui-dashboard.png)
 
-## Features (all tested: 50 of 50 automated checks passed)
+## Features
 
 | Area | What you get |
 |---|---|
-| **Attack blocking** | OWASP CRS v4: SQL injection, XSS, path traversal, file inclusion, command injection, Log4Shell, scanner detection, protocol attacks. Attacks inside JSON POST bodies are inspected too. |
-| **Per-site WAF mode** | `block`, `detect only` (log, never block: best for tuning a new app) or `off` |
-| **Tuning** | paranoia level 1-4, anomaly threshold, **rule exclusions** (global or per URL path) for false positives, custom ModSecurity rules |
-| **Maintenance mode** | **one-click switch per site** (or all sites). Visitors get a colourful 503 page, the app keeps running. |
-| **Automatic service-down page** | if the app is unreachable (502/503/504) visitors see a friendly page that **reloads itself every 10 s**; the real app returns by itself. |
-| **Page editor** | edit both visitor pages in the GUI with live preview; per-site overrides; `{{SITE}}` placeholder |
-| **Rate limiting** | per client IP, requests/second + burst (HTTP 429) |
-| **IP control** | per-site allow-list and deny-list (IPs/CIDRs), global manual bans with expiry |
-| **Auto-ban (like fail2ban)** | an IP blocked too often is banned on every site for N minutes; never-ban list |
-| **Bot / scanner blocking** | known attack-tool user agents (sqlmap, nikto, nmap, nuclei, ...) |
-| **Security headers** | X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy |
-| **Visibility** | dashboard (requests per hour, blocked, top rules, top IPs), searchable attack log with OWASP rule ids, **Prometheus `/metrics`** |
-| **Admin safety** | first-run setup with one-time code, hashed password, CSRF protection, login throttling, audit trail, config **export/import** |
-| **Safe changes** | every change is tested with `nginx -t` **before** it is applied; if the engine rejects it, the old config stays active and the GUI shows the error |
-| **Real client IP** | trusted-proxy list so `X-Forwarded-For` is honoured only from proxies you name |
+| **Attack blocking** | OWASP CRS 4: SQL injection, XSS, path traversal, file inclusion, command injection, Log4Shell, scanner detection, protocol attacks; JSON bodies inspected |
+| **Per-site WAF mode** | `block`, `detect only` (log, never block: ideal for tuning) or `off`; paranoia level 1-4, anomaly threshold |
+| **False-positive tuning** | rule exclusions (global or per URL path), custom ModSecurity rules |
+| **TLS / HTTPS** | TLS 1.2/1.3 only, certificate upload, self-signed generation, **mounted cert-manager secrets**, HSTS, HTTP to HTTPS redirect, HTTP/2 |
+| **Anti-bot challenge** | proof-of-work page for browsers; signed pass bound to client IP + browser; scope "pages" or "all"; path exclusions |
+| **Login gate** | require user name + password in front of any site (users managed in the GUI, hashes only) |
+| **Maintenance mode** | one-click switch per site or all sites; the app keeps running; colourful editable page |
+| **Automatic service-down page** | friendly page when the app is unreachable; reloads itself and the app returns by itself |
+| **Rate limiting, IP control** | per-IP rate limit, per-site allow/deny lists, manual bans, **auto-ban** (like fail2ban), method allow-list |
+| **Hardening** | unknown hosts get no reply, no server version, strict timeouts/header limits, real client IP only from trusted proxies, security headers |
+| **Cloud safety** | upstream SSRF protection (no loopback / cloud-metadata targets), optional allowed-suffix list for upstreams |
+| **Admin security** | HTTPS only, **TOTP two-factor login** + recovery codes, lockouts, revocable sessions with idle timeout, CSRF, strict CSP, panel IP allow-list, audit trail with IPs |
+| **Visibility** | dashboard, searchable attack log with OWASP rule ids, Prometheus `/metrics` (bearer token) |
+| **Safe operations** | every change is tested (`nginx -t`) and confirmed live before it counts; automatic rollback; config export/import (re-validated, no secrets) |
 
-### Not included (honest list)
-- **TLS termination / automatic certificates**: the lab runs plain HTTP. Put cert-manager or an ingress with TLS in front (planned next).
-- Country blocking (needs a GeoIP database), CrowdSec community blocklists, Grafana dashboards: planned for phase 2.
-- No volumetric DDoS protection (that needs a network provider or CDN in front), no machine-learning detection.
-- Single admin account, single replica (no high availability yet).
-- ModSecurity itself ignores an unknown rule *operator* in custom rules (syntax errors and duplicate ids are rejected).
-
-## Install
+## Quick start
 
 ```bash
-# 1. build the image and load it into kind (no registry needed)
-docker build -t shieldwaf:1.0 .
-kind load docker-image shieldwaf:1.0 --name mycluster
+# 1. build the image and load it into kind (for a real cluster push it to your registry, see docs/CLOUD.md)
+docker build -t shieldwaf:2.0 .
+kind load docker-image shieldwaf:2.0 --name mycluster
 
 # 2. deploy
 kubectl apply -f k8s/shieldwaf.yaml
@@ -53,9 +57,10 @@ kubectl get pods -n shieldwaf                  # 2/2 Running
 ### First start: create the admin account
 ```bash
 kubectl port-forward -n shieldwaf svc/shieldwaf-panel 9000:9000
-kubectl logs -n shieldwaf deploy/shieldwaf -c panel | findstr "Setup code"      # PowerShell / cmd; use grep on Linux
+kubectl logs -n shieldwaf deploy/shieldwaf -c panel          # find the line "Setup code: ..."
 ```
-Open **http://localhost:9000**, enter the setup code from the log, then **choose your own admin username and a password of at least 12 characters**.
+Open **https://localhost:9000** (the certificate is self-signed at first: accept the warning, or mount your own),
+enter the setup code, then **choose your own admin name and a strong password**. Then open **Security (2FA)** and enable two-factor login.
 
 ### Add the two apps (Sites, then + Add site)
 | Host name | Upstream |
@@ -63,54 +68,57 @@ Open **http://localhost:9000**, enter the setup code from the log, then **choose
 | `notes.waf.local` | `http://notes-app.notes.svc.cluster.local:80` |
 | `python.waf.local` | `http://python-app-service.python-app.svc.cluster.local:80` |
 
-Keep the defaults (mode `block`, paranoia 1) and press **Save and apply**.
-
 ### Reach the protected apps
 ```bash
-kubectl port-forward -n shieldwaf svc/shieldwaf-proxy 8088:8080
+kubectl port-forward -n shieldwaf svc/shieldwaf-proxy 8088:8080 8443:8443
 ```
-Add `127.0.0.1  notes.waf.local  python.waf.local` to your hosts file (Administrator), then open `http://notes.waf.local:8088`.
-Test with curl: `curl -H "Host: notes.waf.local" http://127.0.0.1:8088/`. For other PCs add `--address 0.0.0.0` and open the firewall port.
+Add `127.0.0.1  notes.waf.local  python.waf.local` to your hosts file (Administrator) and open `http://notes.waf.local:8088`.
+For other PCs add `--address 0.0.0.0` and open the firewall port. In the cloud use a LoadBalancer service (see `docs/CLOUD.md`).
 
-## Using the GUI
+## The GUI
 
 | Screen | Use |
 |---|---|
-| **Dashboard** | requests, blocks, rate limits, 5xx, hourly chart, top rules and IPs, latest events |
-| **Sites** | add/edit/delete sites, **Maintenance ON/OFF** per site or for all |
+| **Dashboard** | requests, blocks, rate limits, 5xx, hourly chart, top rules and IPs, warnings (2FA off, certificate expiring) |
+| **Sites** | add/edit/delete; **TLS, anti-bot, login gate, methods, rate limit, WAF tuning**; **Maintenance ON/OFF** per site or for all |
 | **Pages** | edit the maintenance and service-down pages with live preview |
-| **Attack log** | filter by site, text, blocked / detected; shows the OWASP rule id and score |
+| **Attack log** | filter by site, text, blocked / detected; OWASP rule id and score |
 | **IP bans** | manual and automatic bans |
-| **Settings** | auto-ban rules, trusted proxies, retention, change password |
-| **Audit trail** | who changed what |
-| **Backup** | export/import sites + settings + pages as JSON (never the password or bans) |
+| **Settings** | panel allow-list, idle timeout, upstream restrictions, auto-ban, trusted proxies, metrics token, password |
+| **Security (2FA)** | enable/disable two-factor login |
+| **Audit trail** | who did what, from which IP |
+| **Backup** | export/import sites, settings and pages |
 
 ![Sites](docs/images/gui-sites.png)
-![Site settings](docs/images/gui-site_form.png)
-![Pages](docs/images/gui-pages.png)
+![Site settings: TLS, WAF, anti-bot, login gate](docs/images/gui-site_tls.png)
 ![Attack log](docs/images/gui-logs.png)
+![Two-factor login](docs/images/gui-security.png)
+![Sign in](docs/images/gui-login.png)
 
 ## How it works
 
 ```
- client --Host: notes.waf.local--> [engine: nginx + ModSecurity + OWASP CRS] --> notes-app / python-app-service
-                                        ^  SIGHUP reload after `nginx -t` passes
-                                 [panel: renders nginx + rule files into /data/rendered/gen-N, swaps the "current" link]
-                                        |  tails access.log / audit.json into SQLite -> dashboard, attack log, auto-ban
+ client --Host: notes.waf.local--> [engine: nginx + ModSecurity + OWASP CRS (+ TLS, challenge)] --> notes-app / python-app-service
+                                          ^ reload, confirmed by a handshake file
+                                   [panel: renders nginx + rule files into /data/rendered/gen-N, tests them, swaps "current"]
+                                          | tails access.log / audit.json into SQLite -> dashboard, attack log, auto-ban
 ```
-- Config lives in `/data/config.json` (volume); logs and stats in `/data/shield.db`. Old rendered generations are kept (last 5) so a bad change can never take the engine down.
-- `shareProcessNamespace: true` lets the panel find the nginx master process and send the reload signal.
+The two containers share only the `/data` volume: the panel writes a new generation and a `reload.request`; the engine tests and
+reloads nginx, waits until the new generation answers, and reports in `reload.status`. If it fails the panel restores the previous generation.
 
-## Test results (2026-11-03, kind, notes app + python app as upstreams)
-Automated suite (`50/50` passed): setup/login/CSRF, site validation, normal traffic, SQLi, XSS, file inclusion, command injection,
-Log4Shell, scanner UA, JSON-body attack, detect mode, unknown host, automatic service-down page, maintenance on/off (one site, all sites,
-custom page), rate limiting (429), deny list, allow list, manual ban/unban, auto-ban (and other IPs unaffected), attack log, dashboard,
-Prometheus metrics, backup export without secrets, audit trail.
+## Test results (kind, notes app + python app as upstreams)
+An automated suite of **88 checks** covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
+recovery codes and replay refusal, session revocation after logout and after a password change, CSP/HSTS/cookie flags, metrics token,
+panel allow-list lock-out protection, SSRF refusal (loopback, metadata address and names, allowed-suffix list), import validation,
+13 attack types blocked, unknown-host drop, header-size and method limits, spoofed `X-Forwarded-For`, TLS (1.1 refused, 1.3 works,
+unknown-host handshake refused, HSTS, redirect), certificate upload (mismatched key refused, key never shown), login gate, anti-bot
+challenge (correct work, wrong work, forged seed, forged cookie, other browser, scope pages/all, exclusions), maintenance, service-down
+page, rate limiting, auto-ban, backup contents and audit trail. See [`SECURITY.md`](SECURITY.md) for the design and the limits.
 
-## Security notes
-- The panel is a ClusterIP service: reach it with `kubectl port-forward` (localhost only) unless you deliberately expose it.
-- Use a strong password; it is stored only as a salted hash. Anyone who reaches the panel before setup needs the one-time setup code from the pod log.
-- `/metrics` has no login (counts only); keep the panel service internal.
+## Limits (honest list)
+Not independently audited; OWASP rules are pattern-based (a determined attacker may bypass them; keep apps patched); no volumetric
+DDoS protection; single admin account and single replica; reload time grows with the number of sites (about half a second each);
+certificates are renewed by cert-manager, not by this product. Details in `SECURITY.md`.
 
 ## Comparison with SafeLine and BunkerWeb
 See [`COMPARISON.md`](COMPARISON.md).
@@ -118,7 +126,9 @@ See [`COMPARISON.md`](COMPARISON.md).
 ## Files
 | Path | Purpose |
 |---|---|
-| `Dockerfile`, `engine-entrypoint.sh` | one image for engine + panel |
-| `panel/` | the control panel (Flask app, renderer, background workers, templates) |
-| `k8s/shieldwaf.yaml` | namespace, volume, pod, services |
-| `docs/images/` | GUI screenshots |
+| `Dockerfile`, `engine-entrypoint.sh`, `panel-entrypoint.sh` | the single image: engine and panel |
+| `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
+| `k8s/shieldwaf.yaml` | hardened namespace, volume, pod, services, network policies |
+| `SECURITY.md` | security design, limits, operator duties |
+| `docs/CLOUD.md` | running it in the cloud |
+| `docs/` | logo and GUI screenshots |

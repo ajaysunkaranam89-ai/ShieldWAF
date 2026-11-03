@@ -1,0 +1,32 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Checking your browser - __HOST__</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Segoe UI,system-ui,sans-serif;color:#fff;
+background:linear-gradient(-45deg,#0f2027,#2c5364,#7f00ff,#0575e6);background-size:400% 400%;animation:bg 14s ease infinite}
+@keyframes bg{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.card{width:min(92vw,520px);padding:2.4rem 2rem;text-align:center;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.4);border-radius:24px;backdrop-filter:blur(14px);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.sp{width:64px;height:64px;margin:0 auto 12px;border:6px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:s 1s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}h1{margin:.3rem 0 .5rem;font-size:1.7rem}p{margin:.3rem 0;opacity:.95;line-height:1.5}
+.tag{display:inline-block;margin-top:1rem;padding:.35rem .9rem;border-radius:99px;background:rgba(0,0,0,.28);font-size:.85rem}
+</style></head><body><div class="card"><svg viewBox="0 0 256 256" width="84" height="84" style="display:block;margin:0 auto 6px"><defs><linearGradient id="gg" x1="40" y1="10" x2="216" y2="250" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#19d3ff"/><stop offset=".5" stop-color="#5b5bff"/><stop offset="1" stop-color="#b24dff"/></linearGradient></defs><path d="M128 12 C160 36 194 42 226 42 V120 C226 184 184 228 128 246 C72 228 30 184 30 120 V42 C62 42 96 36 128 12 Z" fill="url(#gg)"/><path fill="#fff" fill-rule="evenodd" d="M128 68 L178 192 H155 L146 168 H110 L101 192 H78 Z M118 148 H138 L128 118 Z"/></svg><div class="sp"></div><h1>Checking your browser</h1>
+<p>__HOST__ is protected by A Shield WAF. This takes a moment and you will be redirected automatically.</p>
+<noscript><p><b>JavaScript is required to continue.</b></p></noscript>
+<span class="tag" id="st">&#128737; Verifying...</span></div>
+<script>/*POW*/</script>
+<script>
+(function () {
+  var seed = "__SEED__", diff = __DIFF__, ret = decodeURIComponent("__RET__"), tries = 0;
+  if (ret.charAt(0) !== "/" || ret.charAt(1) === "/" || ret.charAt(1) === "\\") ret = "/";   // same-site paths only
+  function msg(t) { document.getElementById("st").textContent = t; }
+  ShieldPow.solve(seed, diff, function (n) { msg("\u{1F6E1} Verifying... " + n + " checks"); }, function (nonce) {
+    var x = new XMLHttpRequest();
+    x.open("GET", "/__shield/verify?seed=" + encodeURIComponent(seed) + "&nonce=" + nonce);
+    x.onload = function () {
+      if (x.status === 204) { msg("✅ Verified, redirecting..."); location.replace(ret); }
+      else { msg("Verification expired, retrying..."); setTimeout(function () { location.reload(); }, 1200); }
+    };
+    x.onerror = function () { msg("Network error, retrying..."); setTimeout(function () { location.reload(); }, 2000); };
+    x.send();
+  });
+})();
+</script></body></html>

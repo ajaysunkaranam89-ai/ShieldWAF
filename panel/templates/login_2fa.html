@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A Shield WAF two-factor login</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+<body><div class="center"><div class="box card">
+<div style="text-align:center"><img src="{{ url_for('static', filename='logo-full.svg') }}" alt="A Shield WAF" style="width:100%;max-width:340px"></div>
+<h2 style="margin-top:0">Two-factor code</h2>
+<p class="hint">Enter the 6-digit code from your authenticator app, or one of your recovery codes.</p>
+{% with msgs = get_flashed_messages(with_categories=true) %}{% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}{% endwith %}
+<form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}">
+<label>Code</label><input type="text" name="code" autocomplete="one-time-code" inputmode="numeric" required autofocus>
+<p><button class="btn" style="width:100%">Verify</button></p></form>
+</div></div></body></html>

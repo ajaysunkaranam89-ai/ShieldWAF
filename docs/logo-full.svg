@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 256" role="img" aria-label="A Shield WAF">
+  <defs>
+    <linearGradient id="g" x1="40" y1="10" x2="216" y2="250" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19d3ff"/><stop offset="0.5" stop-color="#5b5bff"/><stop offset="1" stop-color="#b24dff"/>
+    </linearGradient>
+    <linearGradient id="t" x1="610" y1="0" x2="840" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19d3ff"/><stop offset="1" stop-color="#b24dff"/>
+    </linearGradient>
+    <clipPath id="left"><rect x="0" y="0" width="128" height="256"/></clipPath>
+  </defs>
+  <path d="M128 12 C160 36 194 42 226 42 V120 C226 184 184 228 128 246 C72 228 30 184 30 120 V42 C62 42 96 36 128 12 Z" fill="url(#g)"/>
+  <path d="M128 12 C160 36 194 42 226 42 V120 C226 184 184 228 128 246 C72 228 30 184 30 120 V42 C62 42 96 36 128 12 Z" fill="#000" opacity="0.16" clip-path="url(#left)"/>
+  <path d="M128 28 C156 48 184 54 212 54 V120 C212 176 178 214 128 231 C78 214 44 176 44 120 V54 C72 54 100 48 128 28 Z" fill="none" stroke="#fff" stroke-opacity="0.35" stroke-width="3"/>
+  <path fill="#fff" fill-rule="evenodd" d="M128 68 L178 192 H155 L146 168 H110 L101 192 H78 Z M118 148 H138 L128 118 Z"/>
+  <text x="272" y="152" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="88" font-weight="800" fill="#e8ecff" textLength="565" lengthAdjust="spacing">A Shield <tspan fill="url(#t)">WAF</tspan></text>
+  <text x="276" y="204" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="26" font-weight="600" fill="#97a3d0" textLength="560" lengthAdjust="spacing">OPEN-SOURCE WEB APPLICATION FIREWALL</text>
+</svg>

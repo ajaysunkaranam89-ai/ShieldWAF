@@ -4,8 +4,8 @@ body{margin:0;font-family:Segoe UI,system-ui,sans-serif;background:var(--bg);col
 a{color:var(--info);text-decoration:none}a:hover{text-decoration:underline}
 .layout{display:flex;min-height:100vh}
 .side{width:220px;background:linear-gradient(180deg,#151c38,#0d1226);border-right:1px solid var(--line);padding:18px 12px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column}
-.brand{font-weight:800;font-size:20px;padding:6px 10px 16px;background:linear-gradient(90deg,var(--a),var(--b),var(--c));-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand small{display:block;font-size:11px;color:var(--mut);-webkit-text-fill-color:var(--mut);font-weight:400}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px;padding:6px 8px 16px;white-space:nowrap;background:linear-gradient(90deg,var(--a),var(--b),var(--c));-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .logo{flex:none;filter:drop-shadow(0 2px 6px #0008)}.brand span{display:block;line-height:1.15}.brand small{display:block;font-size:11px;color:var(--mut);-webkit-text-fill-color:var(--mut);font-weight:400}
 .side a.nav{display:block;padding:9px 12px;border-radius:9px;color:var(--txt);margin:2px 0}
 .side a.nav:hover{background:var(--panel2);text-decoration:none}
 .side a.nav.on{background:linear-gradient(90deg,var(--a),var(--b));color:#fff}

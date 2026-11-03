@@ -1,8 +1,15 @@
-{% extends "base.html" %}{% block title %}Settings - ShieldWAF{% endblock %}
+{% extends "base.html" %}{% block title %}Settings - A Shield WAF{% endblock %}
 {% block body %}
 <h1>Settings</h1>
 <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}">
-<div class="card"><b>Automatic banning (like fail2ban)</b>
+<div class="card"><b>Admin panel access</b>
+  <p class="hint">Limit who can even reach the admin panel. Your current address must be on the list (the panel refuses a setting that would lock you out). Recovery if you lose access: <span class="mono">kubectl exec -n shieldwaf deploy/shieldwaf -c panel -- python3 /panel/tools.py reset-panel-allow</span></p>
+  <label>Allowed addresses <small>(one IP/CIDR per line; empty = anyone who can reach the panel port)</small></label><textarea name="panel_allow_ips" placeholder="203.0.113.10&#10;10.0.0.0/8">{{ st.panel_allow_ips }}</textarea>
+  <div class="row"><div><label>Sign out idle sessions after (minutes)</label><input type="number" name="idle" min="5" max="480" value="{{ st.session_idle_min }}"></div></div></div>
+<div class="card" style="margin-top:14px"><b>Upstream restrictions (cloud safety)</b>
+  <p class="hint">Sites may only forward to hosts that end with one of these suffixes, for example <span class="mono">svc.cluster.local</span> or your private domain. Empty = any host except loopback / link-local / cloud-metadata addresses (always refused).</p>
+  <textarea name="upstream_allow" placeholder="svc.cluster.local">{{ st.upstream_allow }}</textarea></div>
+<div class="card" style="margin-top:14px"><b>Automatic banning (like fail2ban)</b>
   <p class="hint">An IP that gets blocked (403) or rate-limited (429) too often is banned automatically on every site.</p>
   <label class="chk"><input type="checkbox" name="ab_enabled" {{ 'checked' if st.autoban.enabled }}> Enable auto-ban</label>
   <div class="row">
@@ -12,15 +19,18 @@
   </div>
   <label>Never ban these IPs/CIDRs <small>(one per line, e.g. your admin PC)</small></label><textarea name="never_ban">{{ st.never_ban }}</textarea></div>
 <div class="card" style="margin-top:14px"><b>Real client IP</b>
-  <p class="hint">If ShieldWAF sits behind another proxy/load balancer, list that proxy's CIDRs here so the real client IP is read from X-Forwarded-For. Leave empty when clients connect directly (a spoofed header is then ignored).</p>
+  <p class="hint">If A Shield WAF sits behind a cloud load balancer or CDN, list that proxy's CIDRs here so the real client IP is read from X-Forwarded-For. Leave empty when clients connect directly: a spoofed header is then ignored.</p>
   <textarea name="trusted_proxies" placeholder="10.0.0.0/8">{{ st.trusted_proxies }}</textarea></div>
 <div class="card" style="margin-top:14px"><b>Data retention</b>
   <div class="row"><div><label>Keep logs and events (days)</label><input type="number" name="retention" min="1" max="365" value="{{ st.retention_days }}"></div></div></div>
 <p style="margin-top:14px"><button class="btn">Save settings</button></p></form>
+<div class="card" style="margin-top:18px"><b>Metrics token</b>
+  <p class="hint">Prometheus must send <span class="mono">Authorization: Bearer &lt;token&gt;</span> to <span class="mono">/metrics</span>. A token exists already; generating a new one shows it once and invalidates the old one.</p>
+  <form method="post" action="{{ url_for('metrics_token') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sec" data-confirm="Generate a new metrics token? The old one stops working.">Generate new token</button></form></div>
 <div class="card" style="margin-top:18px"><b>Change admin password</b>
   <form method="post" action="{{ url_for('password') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}">
   <div class="row"><div><label>Current password</label><input type="password" name="old" autocomplete="current-password" required></div>
-  <div><label>New password <small>(12+ chars)</small></label><input type="password" name="new" autocomplete="new-password" required></div>
+  <div><label>New password <small>(12+ chars, 3 of 4 character types)</small></label><input type="password" name="new" autocomplete="new-password" required></div>
   <div><label>Repeat new password</label><input type="password" name="new2" autocomplete="new-password" required></div></div>
-  <p><button class="btn sec">Change password</button></p></form></div>
+  <p><button class="btn sec">Change password</button> <span class="hint">All other sessions are signed out.</span></p></form></div>
 {% endblock %}

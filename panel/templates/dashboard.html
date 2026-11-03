@@ -1,10 +1,11 @@
-{% extends "base.html" %}{% block title %}Dashboard - ShieldWAF{% endblock %}
+{% extends "base.html" %}{% block title %}Dashboard - A Shield WAF{% endblock %}
 {% block body %}
 <h1>Dashboard</h1>
 <p class="sub">Last 24 hours &middot; engine:
   {% if up %}<span class="pill p-ok">running</span>{% else %}<span class="pill p-err">not responding</span>{% endif %}
   {% if maint %}&middot; <span class="pill p-warn">{{ maint }} site(s) in maintenance</span>{% endif %}
   {% if bans %}&middot; <span class="pill p-info">{{ bans }} active ban(s)</span>{% endif %}</p>
+{% for w in warn %}<div class="flash err">{{ w }}</div>{% endfor %}
 <div class="grid g4">
   <div class="card stat s1"><div class="n">{{ total }}</div><div class="l">Requests</div></div>
   <div class="card stat s2"><div class="n">{{ waf }}</div><div class="l">Blocked by WAF (403)</div></div>

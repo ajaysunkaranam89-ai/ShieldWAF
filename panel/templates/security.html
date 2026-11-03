@@ -1,0 +1,25 @@
+{% extends "base.html" %}{% block title %}Security - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Two-factor login (TOTP)</h1>
+<p class="sub">Protects the admin account even if the password leaks. Works with any authenticator app (Microsoft Authenticator, Google Authenticator, Authy, 1Password, ...).</p>
+{% if enabled %}
+<div class="card"><b>Status: <span class="pill p-ok">enabled</span></b> <span class="hint">&middot; {{ left }} recovery code(s) left</span>
+  <p class="hint">To disable it you must enter your password and a current code.</p>
+  <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="disable">
+  <div class="row"><div><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div>
+  <div><label>Current 6-digit code</label><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required></div></div>
+  <p><button class="btn dng" data-confirm="Disable two-factor login?">Disable two-factor login</button></p></form></div>
+{% elif pending %}
+<div class="card"><b>Step 2: add the account to your authenticator app</b>
+  <p>Choose "enter a setup key" in the app and type this key (account: <span class="mono">{{ session.get('user') }}</span>, type: time based):</p>
+  <p class="mono" style="font-size:20px;letter-spacing:.12em;user-select:all">{{ pending }}</p>
+  <p class="hint">Some apps accept this link too: <span class="mono" style="user-select:all;word-break:break-all">{{ uri }}</span></p>
+  <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="enable">
+  <label>Enter the 6-digit code the app shows now</label><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required style="max-width:240px">
+  <p><button class="btn ok">Confirm and enable</button></p></form></div>
+{% else %}
+<div class="card"><b>Status: <span class="pill p-warn">not enabled</span></b>
+  <p class="hint">Strongly recommended, especially when the panel is reachable from the internet or a shared network.</p>
+  <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="start"><button class="btn">Set up two-factor login</button></form></div>
+{% endif %}
+{% endblock %}
