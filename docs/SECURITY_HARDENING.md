@@ -60,11 +60,39 @@ AES-256-GCM, authenticated chunks, separate key ring, rotation, weekly restore t
 
 What this does not do: somebody who can run code **inside the panel** holds the audit key and can write a valid chain. Keep signed exports somewhere the panel cannot write (see `KNOWN_LIMITATIONS.md`).
 
+## 5b. Containers and Kubernetes (modules C and K)
+
+* The engine container reads `/data` **read-only** (rules, certificates, feeds); it writes only `rendered/` (its status files) and `logs/`. The panel-only secrets (session key, setup code, alert / ACME / OIDC / CrowdSec secrets) are in `/private`, a memory volume that only the panel container mounts (`SHIELD_PRIVATE=/private`; unset = the same folder as `/data`, as in 2.3).
+* One service account per component (`shieldwaf-app`, `shieldwaf-db`, `shieldwaf-backup`, `shieldwaf-redis`), none with permissions or a token.
+* Pods spread over nodes **and zones**; optional `k8s/namespace-guardrails.yaml` (LimitRange + ResourceQuota); the existing "restricted" Pod Security level, read-only root file systems, dropped capabilities, seccomp, default-deny NetworkPolicy.
+* Tested in a cluster: `SUITES=hardening bash tests/run.sh` (24 checks: what the engine can and cannot read or write, tokens, RBAC, security contexts, spread, PDB, policies).
+* Not done: signed images / admission policy, user namespaces, a separate init container for migrations (see 3 above).
+
+## 5c. Rate limiting across replicas (module G)
+
+A site can count its rate limit **across all replicas**: nginx asks a small server on `127.0.0.1:9101` (inside the pod) before passing a request on, and the answer comes from one token bucket per (site, client) in Redis (one Lua script, Redis's clock, IPv6 counted per /64). The per-replica `limit_req` stays as a safety net. Redis down → the request is allowed and counted as an error (a short circuit breaker avoids waiting on it); `SHIELD_RL_FAIL=closed` refuses instead. Redis needs a password and is reachable only from the WAF pods (`k8s/redis.yaml`); it holds only counters. Tested with real Redis and real nginx (`tests/redis_ratelimit.sh`, 20 checks). Not tested in a cluster.
+
+## 5d. Bot protection (module H)
+
+`panel/njs/bots.js` scores each request from header behaviour (no user agent, scanner and automation agents, a "browser" without Accept-Language / Accept-Encoding, headless browsers, modern Chrome without Sec-Fetch headers over HTTPS, malformed forwarding headers). Per site: off / detect / block / challenge, a threshold (default 6), paths and user agents that are never judged. Challenge mode sends suspects to the existing proof-of-work page and lets clients with a valid solved-challenge cookie through. **The score is a hint, not proof**: a real browser driven by automation passes it; combine with the rate limit and the challenge. The client-sent `X-Shield-Bot-Score` header is always replaced. Tested in the real engine (`tests/unit/test_bots.py`, 11 tests); the hand-off with a *solved* challenge cookie is not covered by a test.
+
+## 5e. Threat intelligence and CrowdSec (module I)
+
+Feeds: each source keeps a last-good copy (up to 7 days) so one feed being down does not remove its entries; the list is merged and filtered (private ranges, very wide prefixes, your protected networks). CrowdSec: the panel is a standard bouncer (`/v1/decisions/stream`, key in the panel-only secrets), only bans of addresses and ranges, applied by the leader every 30 s, decisions expire locally. Tested against a real CrowdSec Local API (`tests/crowdsec.sh`, 15 checks). Not done: sending the WAF's own blocks back to CrowdSec; mapping CrowdSec "captcha" decisions to the challenge.
+
+## 5f. Recovery objectives (module J)
+
+Nightly dump (RPO ≤ 24 h) or, with the optional WAL archive and weekly encrypted base backup, point-in-time recovery (RPO minutes). Details, the tested procedure and its limits: `DISASTER_RECOVERY.md`. The archived WAL is not encrypted by the tool.
+
 ## 6. Verify it yourself
 
 ```sh
-bash tests/unit/run.sh          # unit tests (SSRF, OpenAPI, audit, backup format)         103 tests
+bash tests/unit/run.sh          # unit tests (SSRF, OpenAPI, bots, audit, backup format, feeds, posture)  126 tests
 bash tests/backup_crypto.sh     # real PostgreSQL + S3 server                              25 checks
 bash tests/db_security.sh       # real PostgreSQL with TLS and the runtime role           33 checks
+bash tests/db_pitr.sh           # point-in-time recovery on real PostgreSQL               13 checks
+bash tests/dbfailover.sh        # primary stopped, standby promoted, panel keeps writing   6 checks
+bash tests/redis_ratelimit.sh   # real Redis + real nginx                                  20 checks
+bash tests/crowdsec.sh          # real CrowdSec Local API                                  15 checks
 IMG_TAG=2.4-dev bash tests/run.sh   # cluster suites on a throw-away namespace (kind)
 ```
