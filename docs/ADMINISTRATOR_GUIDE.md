@@ -16,7 +16,7 @@ The 2.3 guide (`USER-GUIDE.md`) still describes sites, rules, bans, alerts, user
 
 ## Protections you can switch on per site
 
-* **Rate limit** — "Counted: per replica" (fast, each replica counts alone) or "across all replicas (Redis)" (one counter for the whole cluster; needs `k8s/redis.yaml`). If Redis is unavailable the limit falls back to per replica; the site page and Security posture say so.
+* **Rate limit** — "Counted: per replica" (fast, each replica counts alone) or "across all replicas (Redis)" (one counter for the whole cluster; needs `k8s/redis.yaml`). If Redis is unavailable the limit falls back to per replica; the site page and Security posture say so. **Capacity:** a site with a cluster-wide limit handles about 1,100 requests per second per replica (measured); busier sites should keep "per replica".
 * **Bot protection** — mode `detect` first (the score appears in the access log and in the header `X-Shield-Bot-Score` to your application), look at what would be caught, then `block` or `challenge` (proof-of-work page; needs the anti-bot challenge on). Put machine clients' paths (`/api/`) in "never judged". Default threshold 6: an automation library alone (4 points) is not enough.
 * **OpenAPI validation**, **country rules**, **login gate**, **maintenance page**, **custom rules**: as in 2.3; the OpenAPI settings now include body size and depth limits.
 

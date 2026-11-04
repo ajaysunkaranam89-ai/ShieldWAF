@@ -23,18 +23,22 @@ The cluster suites ran on the images built before the last small engine change (
 
 ## Performance (tests/perf, k6 against the real engine in Docker)
 
-One run, on a shared Docker VM with the load generator on the same machine, no OWASP rules loaded: **treat as indicative only.** The throughput of the plain path differed by 50 % between the 2.3 and 2.4 images in the same run (the 2.3 case ran first), which shows the noise.
+Second run (idle machine, final code including kept-alive connections to the limiter), 64 virtual users, 15 s per case, one engine container with 2 workers, a trivial backend, no OWASP rules loaded. The load generator shares the Docker VM, so absolute numbers mean little; the relative ones are what to read. (A first run the same day, before the keep-alive change, showed the same picture for the cluster-wide limit: about 1,100 req/s.)
 
-| Case | req/s | p50 ms | p95 ms |
-|---|---|---|---|
-| 2.3 plain | 9,769 | 4.8 | 16.0 |
-| 2.4 plain | 15,111 | 3.6 | 7.8 |
-| 2.4 per-replica rate limit | 14,966 | 3.7 | 7.8 |
-| 2.4 bot protection | 7,662 | 7.5 | 13.1 |
-| 2.4 cluster-wide limit (Redis), **before the keep-alive fix** | 1,082 | 8.6 | 201 |
-| 2.4 bots + cluster-wide limit, before the fix | 1,149 | 8.6 | 201 |
+| Case | req/s | p50 ms | p95 ms | p99 ms | vs 2.4 plain |
+|---|---|---|---|---|---|
+| 2.3 plain | 11,224 | 4.8 | 11.1 | 15.7 | 97 % |
+| 2.4 plain | 11,575 | 4.8 | 9.9 | 13.7 | 100 % |
+| 2.4 per-replica rate limit | 11,201 | 5.0 | 10.1 | 13.8 | 97 % |
+| 2.4 bot protection (block) | 6,253 | 9.6 | 15.7 | 21.2 | 54 % |
+| 2.4 cluster-wide limit (Redis) | 1,092 | 54.7 | 78.4 | 200.7 | **9.4 %** |
+| 2.4 bots + cluster-wide limit | 1,091 | 57.3 | 72.2 | 81.7 | 9.4 % |
 
-What this says: (1) the new per-request features are visible on a trivial backend; bot scoring costs about 0.07 ms of CPU per request, small next to the OWASP rule set (not measured here); (2) **the cluster-wide limit was the expensive one** (a new connection and thread per request); kept-alive connections were added afterwards and are **not re-measured**: do not rely on any number for that case. Re-run `bash tests/perf/perf.sh` on an idle machine before quoting figures. There is no ModSecurity-with-CRS measurement and no 2.3 vs 2.4 comparison of the full path.
+What this says:
+1. The plain request path is unchanged from 2.3 (within noise), and a per-replica rate limit costs about 3 %.
+2. Bot scoring costs about 0.07 ms of CPU per request (54 % of the throughput of a request that does nothing else). Next to the OWASP rule set, which costs milliseconds per request (not measured here), this is small, but it is not free.
+3. **The cluster-wide rate limit is the expensive feature: one engine replica tops out at about 1,100 requests per second on a site that uses it** (the limiter is a single Python process; keep-alive connections did not change this, so the bottleneck is the limiter itself, not connection setup). Sites with more traffic per replica than that must use the per-replica limit, or this component must be replaced by something faster (for example njs talking to Redis, or a native module). This is the main performance finding of the release.
+4. Not measured: the OWASP rule set, TLS, real backends, several replicas, Redis on another host, the 2.3 vs 2.4 comparison of the full path.
 
 ## Security assessment (self-review, not an independent audit)
 
