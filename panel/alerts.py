@@ -83,7 +83,7 @@ def check_target(host):
     """Return an error string or None. Private addresses are allowed (internal SIEM / SMTP); loopback, link-local, metadata, unspecified and reserved ones are not,
     in any spelling and also when a public name resolves to them."""
     err, _ = netguard.check_host(host, None, "0.0.0.0/0 ::/0", allow_unresolved=False)
-    return None if not err else ("Target host name does not resolve." if "resolve" in err else f"Target is refused: {err}.")
+    return None if not err else ("Target host name does not resolve." if "resolve" in err else f"Target is not allowed: {err}.")
 
 
 def check_url(url):

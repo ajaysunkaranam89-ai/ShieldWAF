@@ -1,8 +1,8 @@
 #!/bin/sh
-# Restore the A Shield WAF database from an encrypted backup made by k8s/backup.yaml.
+# Restore the A Shield WAF database from an encrypted backup (AES-256-GCM, authenticated) made by k8s/backup.yaml. The file is verified BEFORE the database is touched.
 #   sh scripts/restore-db.sh list                          show the backups on the backup volume
 #   sh scripts/restore-db.sh latest                        restore the newest backup
-#   sh scripts/restore-db.sh shieldwaf-20261104-023000.dump.enc
+#   sh scripts/restore-db.sh shieldwaf-20261104-023000.swbk
 # Optional second argument: namespace (default shieldwaf). Environment: DEPLOY (deployment name, default shieldwaf), DB_HOST (database service, default shieldwaf-db), YES=1 (no question).
 # What happens: the firewall replicas are stopped (traffic through them stops for the duration; nothing else is touched), the database is
 # REPLACED by the backup (everything saved after the backup is lost), the replicas are started again with the same count as before.
@@ -27,25 +27,28 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
-      securityContext: {runAsNonRoot: true, runAsUser: 70, runAsGroup: 70, fsGroup: 70, seccompProfile: {type: RuntimeDefault}}
+      securityContext: {runAsNonRoot: true, runAsUser: 10101, runAsGroup: 10101, fsGroup: 10101, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: restore
-          image: shieldwaf-db:16
+          image: shieldwaf:${IMG_TAG:-2.4}
           imagePullPolicy: IfNotPresent
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
           env:
             - {name: PGPASSWORD, valueFrom: {secretKeyRef: {name: shieldwaf-db, key: POSTGRES_PASSWORD}}}
-            - {name: SHIELD_DATA_KEY, valueFrom: {secretKeyRef: {name: shieldwaf-db, key: SHIELD_DATA_KEY}}}
+            - {name: SHIELD_DATA, value: /tmp}
+            - {name: PGUSER, value: shieldwaf}
+            - {name: PGDATABASE, value: shieldwaf}
             - {name: WHICH, value: "$WHICH"}
             - {name: PGHOST, value: "${DB_HOST:-shieldwaf-db}"}
           command: ["sh", "-c"]
           args:
             - |
 $(printf '%s\n' "$1" | sed 's/^/              /')
-          volumeMounts: [{name: backups, mountPath: /backups}, {name: tmp, mountPath: /tmp}]
+          volumeMounts: [{name: backups, mountPath: /backups}, {name: keys, mountPath: /keys, readOnly: true}, {name: tmp, mountPath: /tmp}]
       volumes:
         - {name: backups, persistentVolumeClaim: {claimName: shieldwaf-backups}}
-        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        - {name: keys, secret: {secretName: shieldwaf-backup-keys, defaultMode: 0440}}
+        - {name: tmp, emptyDir: {sizeLimit: 256Mi}}
 EOF
   rc=1
   for _ in $(seq 1 450); do           # up to 15 minutes; stop as soon as the job has succeeded OR failed
@@ -59,7 +62,7 @@ EOF
 }
 
 if [ "$WHICH" = "list" ]; then
-  run_job "ls -l /backups | grep ' shieldwaf-' || echo 'no backups yet'"
+  run_job "python3 /panel/backupcrypt.py list --dir /backups"
   exit $?
 fi
 
@@ -77,7 +80,7 @@ for i in $(seq 1 60); do
   sleep 3
 done
 
-RESTORE='set -eu; f="$WHICH"; if [ "$f" = latest ]; then f=$(ls -1 /backups | grep "^shieldwaf-.*[.]dump[.]enc$" | sort | tail -1); fi; [ -n "$f" ] && [ -f "/backups/$f" ] || { echo "no such backup: $WHICH"; ls -1 /backups; exit 2; }; echo "restoring $f"; openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SHIELD_DATA_KEY -in "/backups/$f" | pg_restore --clean --if-exists --no-owner --no-privileges -U shieldwaf -d shieldwaf; echo "database restored from $f"'
+RESTORE='python3 /panel/backupcrypt.py restore "$WHICH" --dir /backups'
 if run_job "$RESTORE"; then RESULT=ok; else RESULT=failed; fi
 
 echo "starting $REPLICAS replica(s) again ..."

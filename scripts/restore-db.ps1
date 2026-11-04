@@ -1,10 +1,10 @@
 # Restore the A Shield WAF database from an encrypted backup made by k8s/backup.yaml (Windows PowerShell version of restore-db.sh).
 #   .\scripts\restore-db.ps1 list                          show the backups on the backup volume
 #   .\scripts\restore-db.ps1 latest                        restore the newest backup
-#   .\scripts\restore-db.ps1 shieldwaf-20261104-023000.dump.enc
+#   .\scripts\restore-db.ps1 shieldwaf-20261104-023000.swbk
 # Optional: -Namespace shieldwaf  -Deploy shieldwaf  -DbHost shieldwaf-db (database service)  -Yes (no question)
 # The firewall replicas are stopped, the database is REPLACED by the backup (everything saved after it is lost), the replicas are started again.
-param([Parameter(Mandatory = $true)][string]$Which, [string]$Namespace = "shieldwaf", [string]$Deploy = "shieldwaf", [string]$DbHost = "shieldwaf-db", [switch]$Yes)
+param([Parameter(Mandatory = $true)][string]$Which, [string]$Namespace = "shieldwaf", [string]$Deploy = "shieldwaf", [string]$DbHost = "shieldwaf-db", [string]$ImageTag = "2.4", [switch]$Yes)
 $ErrorActionPreference = "Stop"
 $job = "shieldwaf-restore-" + [int][double]::Parse((Get-Date -UFormat %s))
 
@@ -23,25 +23,28 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
-      securityContext: {runAsNonRoot: true, runAsUser: 70, runAsGroup: 70, fsGroup: 70, seccompProfile: {type: RuntimeDefault}}
+      securityContext: {runAsNonRoot: true, runAsUser: 10101, runAsGroup: 10101, fsGroup: 10101, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: restore
-          image: shieldwaf-db:16
+          image: shieldwaf:$ImageTag
           imagePullPolicy: IfNotPresent
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
           env:
             - {name: PGPASSWORD, valueFrom: {secretKeyRef: {name: shieldwaf-db, key: POSTGRES_PASSWORD}}}
-            - {name: SHIELD_DATA_KEY, valueFrom: {secretKeyRef: {name: shieldwaf-db, key: SHIELD_DATA_KEY}}}
+            - {name: SHIELD_DATA, value: /tmp}
+            - {name: PGUSER, value: shieldwaf}
+            - {name: PGDATABASE, value: shieldwaf}
             - {name: WHICH, value: "$Which"}
             - {name: PGHOST, value: "$DbHost"}
           command: ["sh", "-c"]
           args:
             - |
 $indented
-          volumeMounts: [{name: backups, mountPath: /backups}, {name: tmp, mountPath: /tmp}]
+          volumeMounts: [{name: backups, mountPath: /backups}, {name: keys, mountPath: /keys, readOnly: true}, {name: tmp, mountPath: /tmp}]
       volumes:
         - {name: backups, persistentVolumeClaim: {claimName: shieldwaf-backups}}
-        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        - {name: keys, secret: {secretName: shieldwaf-backup-keys, defaultMode: 0440}}
+        - {name: tmp, emptyDir: {sizeLimit: 256Mi}}
 "@
     $file = Join-Path ([IO.Path]::GetTempPath()) "$job.yaml"
     [IO.File]::WriteAllText($file, $yaml, (New-Object Text.UTF8Encoding($false)))
@@ -58,7 +61,7 @@ $indented
     return $ok
 }
 
-if ($Which -eq "list") { Invoke-Job "ls -l /backups | grep ' shieldwaf-' || echo 'no backups yet'" | Out-Null; exit 0 }
+if ($Which -eq "list") { Invoke-Job "python3 /panel/backupcrypt.py list --dir /backups" | Out-Null; exit 0 }
 
 if (-not $Yes) {
     $ans = Read-Host "This REPLACES the database in namespace $Namespace with backup '$Which'. Everything saved after that backup is lost. The firewall replicas are stopped while it runs. Type yes to continue"
@@ -69,15 +72,7 @@ Write-Host "stopping $replicas replica(s) of $Deploy ..."
 kubectl -n $Namespace scale "deploy/$Deploy" --replicas=0 | Out-Null
 for ($i = 0; $i -lt 60; $i++) { if (-not (kubectl -n $Namespace get pods -l app=shieldwaf --no-headers 2>$null)) { break }; Start-Sleep 3 }
 
-$restore = @'
-set -eu
-f="$WHICH"
-if [ "$f" = latest ]; then f=$(ls -1 /backups | grep "^shieldwaf-.*[.]dump[.]enc$" | sort | tail -1); fi
-[ -n "$f" ] && [ -f "/backups/$f" ] || { echo "no such backup: $WHICH"; ls -1 /backups; exit 2; }
-echo "restoring $f"
-openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SHIELD_DATA_KEY -in "/backups/$f" | pg_restore --clean --if-exists --no-owner --no-privileges -U shieldwaf -d shieldwaf
-echo "database restored from $f"
-'@
+$restore = 'python3 /panel/backupcrypt.py restore "$WHICH" --dir /backups'
 $ok = Invoke-Job $restore
 Write-Host "starting $replicas replica(s) again ..."
 kubectl -n $Namespace scale "deploy/$Deploy" --replicas=$replicas | Out-Null

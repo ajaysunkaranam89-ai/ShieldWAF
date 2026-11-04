@@ -81,9 +81,14 @@ database:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {cpu: "1", memory: 512Mi}
 
-backup:                      # encrypted nightly backups of the database (see docs/INSTALL.md, "Backup and restore")
+backup:                      # authenticated, encrypted nightly backups of the database (see docs/DISASTER_RECOVERY.md)
   enabled: false
   schedule: "30 2 * * *"
+  verifySchedule: "0 4 * * 0"   # weekly: restore the newest backup into a temporary database and delete it again
+  keySecret: shieldwaf-backup-keys   # the key ring: `current` + key-<id>; NOT the database secret. Rotate with scripts/rotate-backup-key.sh
+  keys:
+    create: true             # generate the key ring at install (kept on upgrade and after uninstall); false = you create it (scripts/create-backup-key.sh)
+  s3Secret: shieldwaf-backup-s3      # optional secret for an independent S3-compatible destination: endpoint (https://), bucket, prefix, access-key, secret-key
   keepDays: 14
   storage: 5Gi
   storageClassName: ""

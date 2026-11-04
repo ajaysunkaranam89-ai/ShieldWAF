@@ -1,0 +1,21 @@
+# Tests that need no Kubernetes cluster: unit tests (SSRF guard, OpenAPI compiler against the real engine, audit chain, backup format) and the backup
+# integration test (real PostgreSQL + an S3 server in Docker). The cluster suites (tests/run.sh) need a kind cluster and are run before a release.
+name: tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t shieldwaf:ci .
+      - run: IMAGE=shieldwaf:ci bash tests/unit/run.sh
+  backup-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t shieldwaf:ci . && docker build -t shieldwaf-db:16 db
+      - run: IMAGE=shieldwaf:ci bash tests/backup_crypto.sh
