@@ -23,6 +23,7 @@ import crsupdate
 import feeds
 import openapi
 import pages
+import ratelimit
 import security
 import store
 
@@ -355,6 +356,7 @@ def _common(site, gen, feed_on, layout="legacy"):
               f"  location = /__shield_maintenance.html {{ internal; root {pdir}; add_header Retry-After 1800 always; add_header Cache-Control no-store always; }}",
               "  location / { return 503; }"]
         return L
+    cluster_rl = uses_cluster_rl(site)
     pool0 = balancing(site)
     if not pool0:                                  # every upstream was refused (SSRF check): answer 502 instead of connecting anywhere
         return L + ["  location / { return 502; }"]
@@ -366,6 +368,8 @@ def _common(site, gen, feed_on, layout="legacy"):
     if site["down_page"]:
         L.append(f"  location = /__shield_down.html {{ internal; root {pdir}; add_header Retry-After 30 always; add_header Cache-Control no-store always; }}")
     loc = ["  location / {"]
+    if cluster_rl:
+        loc += [f"    auth_request /__shield/rl_{sid};", f"    auth_request_set $shield_rl $upstream_http_x_shield_rl;", f"    error_page 403 = @rl_{sid};"]
     if ch["enabled"]:
         loc.append("    if ($chal_need = 1) { rewrite ^ /__shield/page last; }")
     if site["auth"]["enabled"] and site["auth"]["users"]:
@@ -376,6 +380,8 @@ def _common(site, gen, feed_on, layout="legacy"):
     if site["rate_limit"]["enabled"]:
         loc += [f"    limit_req zone=rl_{sid} burst={int(site['rate_limit']['burst'])} nodelay;", "    limit_req_status 429;"]
     loc.append("  }")
+    if cluster_rl:
+        loc += rl_cluster_locations(site)
     if lb:
         retry = [f"  location @retry_{sid} {{", '    if ($request_method !~ "^(GET|HEAD|OPTIONS)$") { return 502; }',      # never replay a write
                  f"    set $up $upnext_{sid};", "    proxy_pass $up;"] + _proxy_opts(site)
@@ -385,6 +391,32 @@ def _common(site, gen, feed_on, layout="legacy"):
         if not site["down_page"]:
             loc.append('  location = /__shield_gw { internal; return 502 "Bad gateway"; }')
     return L + loc
+
+
+def uses_cluster_rl(site):
+    """True when this site's rate limit is counted cluster-wide in Redis (needs SHIELD_REDIS_URL; without it the per-replica limit is used)."""
+    rl = site["rate_limit"]
+    return bool(rl["enabled"] and rl.get("scope") == "cluster" and ratelimit.configured())
+
+
+def rl_cluster_locations(site):
+    """The internal locations for a cluster-wide rate limit: the check against the local limiter (any failure of it means 'allowed': fail-open is decided
+    inside the limiter, nginx must never answer 500 because the limiter is restarting) and the 429 answer."""
+    sid, rl = site["id"], site["rate_limit"]
+    return [f"  location = /__shield/rl_{sid} {{",
+            "    internal; modsecurity off;",
+            f"    proxy_pass http://127.0.0.1:{ratelimit.PORT}/check;",
+            '    proxy_http_version 1.1; proxy_set_header Connection ""; proxy_pass_request_body off; proxy_set_header Content-Length "";',
+            "    proxy_set_header X-Real-IP $remote_addr;",
+            f"    proxy_set_header X-Shield-Site {sid}; proxy_set_header X-Shield-Rps {int(rl['rps'])}; proxy_set_header X-Shield-Burst {int(rl['burst'])};",
+            "    proxy_connect_timeout 200ms; proxy_read_timeout 400ms; proxy_intercept_errors on;",
+            f"    error_page 500 502 503 504 ={'403' if ratelimit.FAIL_CLOSED else '204'} /__shield/rl_ok_{sid};",
+            "  }",
+            f"  location = /__shield/rl_ok_{sid} {{ internal; return {'403' if ratelimit.FAIL_CLOSED else '204'}; }}",
+            f"  location @rl_{sid} {{",
+            '    if ($shield_rl = "limited") { add_header Retry-After 1 always; return 429; }',
+            "    return 403;",
+            "  }"]
 
 
 def _server(site, gen, feed_on, layout="legacy"):

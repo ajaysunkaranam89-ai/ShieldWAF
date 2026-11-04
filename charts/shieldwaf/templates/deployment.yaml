@@ -119,6 +119,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secret.name }}
                   key: SHIELD_DATA_KEY
+            - name: SHIELD_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.secretName }}
+                  key: SHIELD_REDIS_URL
+                  optional: true
             - name: SHIELD_PRIVATE
               value: /private
             - name: SHIELD_NODE

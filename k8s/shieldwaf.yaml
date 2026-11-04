@@ -153,6 +153,12 @@ spec:
                 secretKeyRef:
                   name: shieldwaf-db
                   key: SHIELD_DATA_KEY
+            - name: SHIELD_REDIS_URL        # optional (k8s/redis.yaml): cluster-wide rate limiting; unset = every replica counts on its own
+              valueFrom:
+                secretKeyRef:
+                  name: shieldwaf-redis
+                  key: SHIELD_REDIS_URL
+                  optional: true
             - name: SHIELD_PRIVATE
               value: /private
             - name: SHIELD_NODE             # this replica's name, shown on the Cluster page

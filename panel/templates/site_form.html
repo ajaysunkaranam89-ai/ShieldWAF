@@ -129,7 +129,9 @@
   <label class="chk"><input type="checkbox" name="sec_headers" {{ 'checked' if s.sec_headers }}> Add security headers (X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy)</label>
   <label class="chk"><input type="checkbox" name="rl_enabled" {{ 'checked' if s.rate_limit.enabled }}> Rate limiting per client IP</label>
   <div class="row"><div><label>Requests per second</label><input type="number" name="rl_rps" min="1" max="10000" value="{{ s.rate_limit.rps }}"></div>
-    <div><label>Burst</label><input type="number" name="rl_burst" min="0" max="100000" value="{{ s.rate_limit.burst }}"></div></div>
+    <div><label>Burst</label><input type="number" name="rl_burst" min="0" max="100000" value="{{ s.rate_limit.burst }}"></div>
+    <div><label>Counted</label><select name="rl_scope"><option value="replica" {{ 'selected' if s.rate_limit.scope != 'cluster' }}>per replica (fastest)</option>
+      <option value="cluster" {{ 'selected' if s.rate_limit.scope == 'cluster' }}>across all replicas (Redis){{ '' if rl_status.configured else ' - Redis is not configured' }}</option></select></div></div>
 </div>
 <div class="card" style="margin-top:14px">
   <b>Page overrides for this site</b> <span class="hint">(empty = use the global pages from the Pages menu). Use <span class="mono">{{ '{{SITE}}' }}</span> for the host name.</span>

@@ -1,0 +1,94 @@
+# OPTIONAL: Redis for cluster-wide rate limiting (sites with "Counted: across all replicas"). Without it every replica counts on its own (as in 2.3).
+#   sh scripts/create-redis-secret.sh              (Windows: .\scripts\create-redis-secret.ps1)      then      kubectl apply -f k8s/redis.yaml
+#   kubectl -n shieldwaf rollout restart deploy/shieldwaf          (the panel reads SHIELD_REDIS_URL at start)
+# Redis holds only short-lived counters (no persistence): losing it costs nothing but the current counting windows; while it is unavailable the limit falls back to the
+# per-replica limit (fail-open, see docs/SECURITY_HARDENING.md). It requires a password, is reachable only from the WAF pods, and runs with the same restrictions as the rest.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shieldwaf-redis
+  namespace: shieldwaf
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shieldwaf-redis
+  namespace: shieldwaf
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app: shieldwaf-redis
+  template:
+    metadata:
+      labels:
+        app: shieldwaf-redis
+    spec:
+      serviceAccountName: shieldwaf-redis
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: redis
+          image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", 'exec redis-server --requirepass "$REDIS_PASSWORD" --save "" --appendonly no --maxmemory 128mb --maxmemory-policy volatile-ttl --protected-mode yes']
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: shieldwaf-redis, key: REDIS_PASSWORD}}
+          ports:
+            - containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          readinessProbe:
+            exec: {command: ["sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']}
+            periodSeconds: 5
+          livenessProbe:
+            exec: {command: ["sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: "1", memory: 192Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-redis
+  namespace: shieldwaf
+spec:
+  selector:
+    app: shieldwaf-redis
+  ports:
+    - {name: redis, port: 6379, targetPort: 6379}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-redis-allow
+  namespace: shieldwaf
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf-redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: shieldwaf
+      ports:
+        - {protocol: TCP, port: 6379}
