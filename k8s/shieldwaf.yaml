@@ -85,6 +85,29 @@ spec:
         fsGroup: 10101
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: migrate                        # least-privilege mode (secrets made by scripts/create-db-secret.*): creates the role shieldwaf_app and applies migrations and grants
+          image: shieldwaf:2.4                 # with the OWNER credential, which exists only in this container; the panel itself cannot change the schema. Without the
+          imagePullPolicy: IfNotPresent        # key SHIELD_DB_OWNER_URL (a 2.3 secret) this step does nothing and the panel migrates as before.
+          command: ["sh", "-c", 'if [ -n "$SHIELD_DB_MIGRATE_URL" ]; then exec python3 /panel/dbadmin.py roles --app-role shieldwaf_app; else echo "no owner credential configured: the panel migrates itself"; fi']
+          env:
+            - name: SHIELD_DB_MIGRATE_URL
+              valueFrom: {secretKeyRef: {name: shieldwaf-db, key: SHIELD_DB_OWNER_URL, optional: true}}
+            - name: SHIELD_DB_APP_PASSWORD
+              valueFrom: {secretKeyRef: {name: shieldwaf-db, key: SHIELD_DB_APP_PASSWORD, optional: true}}
+            - {name: SHIELD_DB_SSLMODE, value: require}
+            - {name: SHIELD_DATA, value: /tmp}
+            - {name: SHIELD_PRIVATE, value: /tmp/private}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          volumeMounts:
+            - {name: tmp-panel, mountPath: /tmp}
       containers:
         - name: engine
           image: shieldwaf:2.4
@@ -146,6 +169,8 @@ spec:
                 secretKeyRef:
                   name: shieldwaf-db
                   key: SHIELD_DB_URL
+            - name: SHIELD_DB_MIGRATE       # "off" (new secrets): this container may not change the schema, the init container did it
+              valueFrom: {secretKeyRef: {name: shieldwaf-db, key: SHIELD_DB_MIGRATE, optional: true}}
             - name: SHIELD_DB_SSLMODE       # the database only accepts TLS; require = encrypted (use verify-full with SHIELD_DB_SSLROOTCERT when you mount your own certificate)
               value: require
             - name: SHIELD_DATA_KEY         # encrypts the files replicas share through the database (certificates, keys, alert secrets)

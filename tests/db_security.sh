@@ -28,6 +28,11 @@ check "a TLS connection works and is TLS 1.2 or newer" "$(echo "$OUT" | grep -Eq
 OUT=$(PW=wrong psqlc "host=pg user=shieldwaf dbname=shieldwaf sslmode=require" -tAc "select 1" 2>&1); RC=$?
 check "a wrong password is rejected" "$([ $RC != 0 ] && echo 1 || echo 0)" "$OUT"
 
+# the panel in least-privilege mode must not change the schema: on a database nobody has migrated yet it waits and then refuses
+OUT=$(cl -e SHIELD_DB_SSLMODE=require -e SHIELD_DB_URL="$OWNER" -e SHIELD_DB_MIGRATE=off -e SHIELD_DB_MIGRATE_WAIT_S=6 --entrypoint python3 "$IMG" -c "
+import sys; sys.path.insert(0,'/panel'); import store; store.init_db()" 2>&1); RC=$?
+check "SHIELD_DB_MIGRATE=off: on an unmigrated database the panel waits and then refuses (it never creates tables itself)" "$([ $RC != 0 ] && echo "$OUT" | grep -q 'not up to date' && [ "$(psqlx 'select count(*) from information_schema.tables where table_schema=$$public$$ and table_name=$$audit$$' 2>/dev/null || echo 0)" = 0 ] && echo 1 || echo 0)" "rc=$RC $OUT"
+
 # the runtime role
 OUT=$(cl -e SHIELD_DB_SSLMODE=require -e SHIELD_DB_MIGRATE_URL="$OWNER" --entrypoint python3 "$IMG" /panel/dbadmin.py roles --print-password 2>&1)
 APPPW=$(echo "$OUT" | tail -1)
@@ -40,6 +45,9 @@ check "dbadmin check: runtime role has TLS, no superuser rights, audit trail SEL
 OUT=$(cl -e SHIELD_DB_SSLMODE=require -e SHIELD_DB_URL="$OWNER" --entrypoint python3 "$IMG" /panel/dbadmin.py check 2>&1); RC=$?
 check "dbadmin check flags the OWNER connection as not least-privilege (exit 1)" "$([ $RC = 1 ] && echo 1 || echo 0)" "rc=$RC"
 
+OUT=$(cl -e SHIELD_DB_SSLMODE=require -e SHIELD_DB_URL="$APP" -e SHIELD_DB_MIGRATE=off -e SHIELD_AUDIT_KEY=k --entrypoint python3 "$IMG" -c "
+import sys; sys.path.insert(0,'/panel'); import store; store.init_db(); store.audit('t','startup','ok'); print('STARTED', store.current_schema_version())" 2>&1 | tail -2)
+check "after the init step the panel starts as the runtime role with SHIELD_DB_MIGRATE=off and can write the audit trail" "$(echo "$OUT" | grep -q STARTED && echo 1 || echo 0)" "$OUT"
 echo "--- the panel code on the runtime role"
 OUT=$(cl -e SHIELD_DB_SSLMODE=require -e SHIELD_DB_URL="$APP" -e SHIELD_DB_MIGRATE_URL="$OWNER" -e SHIELD_DB_APP_ROLE=shieldwaf_app --entrypoint python3 "$IMG" /t/db_security_app.py 2>&1)
 echo "$OUT" | grep -E "^(PASS|FAIL)"
