@@ -1,0 +1,31 @@
+# OPTIONAL guard rails for the namespace shieldwaf:  kubectl apply -f k8s/namespace-guardrails.yaml
+# * LimitRange: a container without resource settings (for example a one-off job somebody starts by hand) gets small defaults instead of unlimited use;
+# * ResourceQuota: an upper bound for the whole namespace, so a runaway job or a mistaken scale-up cannot starve the other applications of the cluster.
+# Adjust the numbers to your cluster: the quota below leaves room for 3 replicas, the database, backup and restore jobs and an Argo CD sync.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: shieldwaf-defaults
+  namespace: shieldwaf
+spec:
+  limits:
+    - type: Container
+      default: {cpu: 500m, memory: 512Mi}
+      defaultRequest: {cpu: 20m, memory: 64Mi}
+      max: {cpu: "2", memory: 2Gi}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: shieldwaf-quota
+  namespace: shieldwaf
+spec:
+  hard:
+    pods: "20"
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "12"
+    limits.memory: 12Gi
+    persistentvolumeclaims: "6"
+    requests.storage: 50Gi
+    services.loadbalancers: "1"

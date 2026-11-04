@@ -40,7 +40,8 @@ store.init_db()
 # --- secrets -----------------------------------------------------------------------------------
 # Created once for the whole cluster (sharedfs.ensure: the first replica to start wins, the others adopt its copy).
 os.makedirs(store.DATA, exist_ok=True)
-_sk = os.path.join(store.DATA, "secret.key")
+os.makedirs(store.PRIVATE, mode=0o700, exist_ok=True)
+_sk = os.path.join(store.PRIVATE, "secret.key")
 
 
 def _new_secret_file(path, text):
@@ -54,7 +55,7 @@ app.secret_key = open(_sk).read().strip()
 app.config.update(SESSION_COOKIE_NAME="__Host-shieldwaf", SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
                   SESSION_COOKIE_SAMESITE="Strict", MAX_CONTENT_LENGTH=2 * 1024 * 1024)
 ABS_SESSION = 8 * 3600
-_bc = os.path.join(store.DATA, "bootstrap.code")
+_bc = os.path.join(store.PRIVATE, "bootstrap.code")
 
 
 def bootstrap_code():

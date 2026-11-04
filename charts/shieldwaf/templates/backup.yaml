@@ -58,6 +58,7 @@ spec:
             app: shieldwaf-backup
         spec:
           restartPolicy: Never
+          serviceAccountName: shieldwaf-backup
           automountServiceAccountToken: false
           {{- with .Values.imagePullSecrets }}
           imagePullSecrets: {{- toYaml . | nindent 12 }}
@@ -141,6 +142,7 @@ spec:
             app: shieldwaf-backup
         spec:
           restartPolicy: Never
+          serviceAccountName: shieldwaf-backup
           automountServiceAccountToken: false
           {{- with .Values.imagePullSecrets }}
           imagePullSecrets: {{- toYaml . | nindent 12 }}

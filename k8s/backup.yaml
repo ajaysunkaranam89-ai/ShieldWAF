@@ -41,6 +41,7 @@ spec:
             app: shieldwaf-backup
         spec:
           restartPolicy: Never
+          serviceAccountName: shieldwaf-backup
           automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true
@@ -122,6 +123,7 @@ spec:
             app: shieldwaf-backup
         spec:
           restartPolicy: Never
+          serviceAccountName: shieldwaf-backup
           automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true
