@@ -106,7 +106,7 @@ def _modsec_site(site, gen, crs_dir=crsupdate.BAKED, canary=False):
         lines += ["# ---- custom rules (admin supplied) ----", site["custom_rules"].strip()]
     oa = site["openapi"]
     if oa["mode"] != "off" and oa["spec"].strip():
-        lines.append(openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"])[0])
+        lines.append(openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"], max_body_kb=oa.get("max_body_kb", 1024), max_depth=oa.get("max_depth", 10))[0])
     lines += [f"Include {crs_dir}/crs-setup.conf", f"Include {crs_dir}/rules/*.conf"]
     for ex in site["exclusions"]:
         if not ex.get("path"):
@@ -218,7 +218,7 @@ def _modsec_dedicated(site):
         lines += ["# ---- custom rules (admin supplied) ----", site["custom_rules"].strip()]
     oa = site["openapi"]
     if oa["mode"] != "off" and oa["spec"].strip():
-        lines.append(openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"])[0])
+        lines.append(openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"], max_body_kb=oa.get("max_body_kb", 1024), max_depth=oa.get("max_depth", 10))[0])
     return "\n".join(lines) + "\n"
 
 

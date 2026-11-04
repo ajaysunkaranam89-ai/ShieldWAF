@@ -122,7 +122,7 @@ DEFAULT_SITE = {
     "challenge": {"enabled": False, "difficulty": 4, "ttl_hours": 12, "scope": "pages", "exclude_paths": ""},
     "positive": {"enabled": False, "paths": "", "content_types": "application/json application/x-www-form-urlencoded multipart/form-data text/plain",
                  "max_url": 2048},          # positive security model: only what is listed gets through
-    "openapi": {"mode": "off", "spec": "", "strict": True, "unknown_paths": "allow", "report": []},   # OpenAPI request validation
+    "openapi": {"mode": "off", "spec": "", "strict": True, "unknown_paths": "allow", "report": [], "max_body_kb": 1024, "max_depth": 10},   # OpenAPI request validation
     "crs_channel": "stable",        # stable = active rule set; canary = staged rule set in detect-only mode
     "geo": {"mode": "off", "countries": ""},      # off | deny | allow  + country codes such as CN RU
     "under_attack": False, "ua_until": 0,   # forces the challenge for everyone + a rate limit; ua_until>0 = automatic, ends by itself
