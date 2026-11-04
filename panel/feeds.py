@@ -14,6 +14,7 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
+import netguard
 import sharedfs
 import store
 
@@ -35,7 +36,7 @@ _state_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------------------------- safe fetching
 def _public_ip(ip):
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+    return netguard.classify(ip) == "public"
 
 
 def check_url(url):
@@ -60,7 +61,7 @@ def _fetch_lines(url, cap):
     if not url.startswith("https://"):                      # defence in depth: check_url() already enforces this
         raise ValueError("only https:// feeds are allowed")
     req = urllib.request.Request(url, headers={"User-Agent": "A-Shield-WAF/2.1 (+threat-feed-refresh)"})
-    with urllib.request.urlopen(req, timeout=40) as r:      # nosec B310 - scheme is https only, host checked to be public
+    with netguard.safe_open(req, timeout=40, schemes=("https",), private_allow="") as r:      # https only, public addresses only, also at every redirect hop
         total = 0
         for raw in r:
             total += len(raw)

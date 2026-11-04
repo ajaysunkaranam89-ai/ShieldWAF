@@ -11,6 +11,7 @@ import subprocess
 import time
 from urllib.parse import quote, urlparse
 
+import netguard
 import sharedfs
 import store
 
@@ -60,31 +61,34 @@ def crypt_hash(password):
 
 
 # -------------------------------------------------------------------------------------------------- upstream (SSRF)
-_BLOCKED_NETS = [ipaddress.ip_network(n) for n in (
-    "127.0.0.0/8", "0.0.0.0/8", "169.254.0.0/16", "100.100.100.200/32", "::1/128", "fe80::/10", "fd00:ec2::/32")]
-_BLOCKED_NAMES = ("localhost", "metadata.google.internal", "metadata", "instance-data")
-
-
-def check_upstream(url, allow_suffixes=""):
-    """Return an error string or None. Blocks loopback, link-local and cloud-metadata targets so the WAF cannot be
-    pointed at itself, at its own admin panel or at the instance metadata service."""
+def check_upstream(url, allow_suffixes="", private_allow=None, log=True):
+    """Return an error string or None. The host name is RESOLVED and every address it resolves to is classified (netguard.py): loopback, link-local,
+    cloud-metadata, unspecified, multicast and reserved addresses are never allowed, in any spelling (octal, hex, decimal, IPv6-wrapped IPv4) and also when a public
+    DNS name resolves to them. Private addresses (RFC 1918, unique-local, CGNAT) must be on `private_allow` (default: the three RFC 1918 ranges and fc00::/7,
+    which is what 2.3 accepted) or the host must end with one of the administrator's `allow_suffixes` (explicit authorisation of internal names).
+    A name that does not resolve yet is accepted (the service may be created later); the leader re-checks every name every 15 seconds."""
     u = urlparse(url)
     host = (u.hostname or "").lower().rstrip(".")
     if not host:
         return "Upstream has no host name."
-    if u.port is not None and not (1 <= u.port <= 65535):
-        return "Upstream port out of range."
-    if host in _BLOCKED_NAMES or host.endswith(".localhost"):
-        return "Upstream host is not allowed (loopback / metadata name)."
     try:
-        ip = ipaddress.ip_address(host)
-        if any(ip in n for n in _BLOCKED_NETS):
-            return "Upstream address is not allowed (loopback, link-local or cloud-metadata range)."
+        port = u.port
     except ValueError:
-        pass
+        return "Upstream port out of range."
+    if port is not None and not (1 <= port <= 65535):
+        return "Upstream port out of range."
     suffixes = [x.strip().lower() for x in re.split(r"[\s,]+", allow_suffixes or "") if x.strip()]
-    if suffixes and not any(host == s or host.endswith("." + s.lstrip(".")) for s in suffixes):
+    listed = bool(suffixes) and any(host == x or host.endswith("." + x.lstrip(".")) for x in suffixes)
+    if suffixes and not listed:
         return "Upstream host is not in the allowed list (Settings, 'Allowed upstream suffixes')."
+    try:
+        err, _addrs = netguard.check_host(host, port or (443 if u.scheme == "https" else 80), "0.0.0.0/0 ::/0" if listed else private_allow)
+    except ValueError:
+        return "The list of allowed private networks in Settings is not valid."
+    if err:
+        if log:
+            netguard.event("upstream-refused", url=url[:200], reason=err)
+        return f"Upstream address is not allowed: {err}."
     return None
 
 

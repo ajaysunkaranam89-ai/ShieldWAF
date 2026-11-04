@@ -69,7 +69,9 @@ DEFAULT_SETTINGS = {
     "autoban": {"enabled": False, "threshold": 10, "window_min": 5, "ban_min": 30},
     "retention_days": 7,
     "panel_allow_ips": "",          # CIDRs allowed to reach the admin panel (empty = anyone who can reach the port)
-    "upstream_allow": "",           # if set, upstream host names must end with one of these suffixes (one per line)
+    "upstream_allow": "",           # if set, upstream host names must end with one of these suffixes (one per line); matching names may use private addresses
+    "upstream_private_allow": "10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7",   # private ranges an upstream may resolve to (loopback, link-local, metadata are never allowed)
+    "upstream_pin_dns": False,      # true = nginx connects to the addresses validated by the panel instead of resolving names itself (closes DNS rebinding)
     "metrics_token": "",            # bearer token required for /metrics (generated at first start)
     "session_idle_min": 30,
     # IP reputation feeds (non-pattern defence): known-bad networks are refused before any rule runs
@@ -81,7 +83,7 @@ DEFAULT_SETTINGS = {
     # alerting + SIEM export (channels are managed in the GUI; secrets live in /data/secrets, never here)
     "alerts": {"channels": [], "cooldown_s": 300, "spike": {"enabled": True, "blocked_per_min": 100},
                "events": {"engine_down": True, "engine_recovered": True, "config_failed": True, "under_attack": True, "attack_spike": True,
-                          "auto_ban": True, "upstream_down": True, "login_lockout": True, "admin_change": True, "cert_expiring": True, "feeds_failed": True,
+                          "auto_ban": True, "upstream_down": True, "ssrf_blocked": True, "login_lockout": True, "admin_change": True, "cert_expiring": True, "feeds_failed": True,
                           "rules_update": True}},
     # OWASP rule-set updates (see crsupdate.py): "baked" = the version inside the image
     "crs": {"active": "baked", "previous": "", "staged": "", "staged_sha256": "", "staged_at": 0, "latest": "", "checked_at": 0,
@@ -98,6 +100,8 @@ DEFAULT_SETTINGS = {
 
 DEFAULT_SITE = {
     "id": "", "host": "", "upstream": "", "enabled": True,
+    "ssrf_blocked": [],             # upstreams the leader found resolving to a forbidden address (taken out of use until they are clean again)
+    "ssrf_seen": {},                # upstream -> addresses it resolved to at the last check (used by DNS pinning)
     "upstreams": [],                # more upstreams besides `upstream`: [{"url": "...", "weight": 1, "backup": False}]
     "lb_method": "round_robin",     # round_robin (weighted, random per request) | ip_hash (a client keeps its upstream)
     "health": {"enabled": False, "path": "/", "down": []},     # active checks by the leader; `down` = upstreams currently out of rotation

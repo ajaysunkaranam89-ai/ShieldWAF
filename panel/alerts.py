@@ -19,6 +19,7 @@ import urllib.request
 from email.message import EmailMessage
 from urllib.parse import urlparse
 
+import netguard
 import sharedfs
 import store
 
@@ -32,6 +33,7 @@ EVENTS = {   # key: (label, default severity)
     "attack_spike": ("Many blocked requests in a short time", "warning"),
     "auto_ban": ("An address was banned automatically", "info"),
     "upstream_down": ("An upstream of a site went down or came back", "warning"),
+    "ssrf_blocked": ("An upstream resolved to a forbidden address (possible SSRF / DNS rebinding)", "critical"),
     "login_lockout": ("Admin login locked out after repeated failures", "warning"),
     "admin_change": ("Administrator, role, password or 2FA change", "warning"),
     "cert_expiring": ("A certificate expires soon", "warning"),
@@ -77,18 +79,10 @@ def delete_secret(cid):
 
 # ---------------------------------------------------------------------------------------------- target safety
 def check_target(host):
-    """Return an error string or None. Private addresses are allowed (internal SIEM / SMTP), loopback, link-local and metadata are not."""
-    if not host or host.lower() in ("localhost", "metadata.google.internal"):
-        return "Target host is not allowed."
-    try:
-        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    except OSError:
-        return "Target host name does not resolve."
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or str(ip) == "100.100.100.200":
-            return "Target resolves to a loopback / link-local / metadata address (refused)."
-    return None
+    """Return an error string or None. Private addresses are allowed (internal SIEM / SMTP); loopback, link-local, metadata, unspecified and reserved ones are not,
+    in any spelling and also when a public name resolves to them."""
+    err, _ = netguard.check_host(host, None, "0.0.0.0/0 ::/0", allow_unresolved=False)
+    return None if not err else ("Target host name does not resolve." if "resolve" in err else f"Target is refused: {err}.")
 
 
 def check_url(url):
@@ -132,7 +126,8 @@ def format_webhook(ch, ev):
 def _post_json(url, payload, headers=None, timeout=15):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
                                  headers={"Content-Type": "application/json", "User-Agent": "A-Shield-WAF/2.3", **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as r:      # nosec B310 - scheme and target were validated when the channel was saved
+    # validated again now (DNS may have changed since the channel was saved) and at every redirect hop
+    with netguard.safe_open(req, timeout=timeout, schemes=("http", "https"), private_allow="0.0.0.0/0 ::/0") as r:
         r.read(2048)
         if r.status >= 300:
             raise ValueError(f"HTTP {r.status}")
