@@ -1,5 +1,29 @@
 {{- if .Values.backup.enabled }}
-# Encrypted nightly backups of the database. Restore with scripts/restore-db.sh (see docs/INSTALL.md): DEPLOY={{ .Values.deployment.name }} DB_HOST={{ include "shieldwaf.dbHost" . }}
+# Authenticated, encrypted backups of the database (AES-256-GCM), a weekly restore test, optional independent S3 copy. Restore with scripts/restore-db.sh (see docs/DISASTER_RECOVERY.md):
+# DEPLOY={{ .Values.deployment.name }} DB_HOST={{ include "shieldwaf.dbHost" . }}
+{{- if and .Values.backup.keys.create (eq .Values.backup.keySecret "shieldwaf-backup-keys") }}
+{{- /* The key ring is a secret of its own (never the database secret, never on the backup volume). Generated once, kept on upgrade and after uninstall. */}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace .Values.backup.keySecret }}
+{{- $data := dict }}{{- if $existing }}{{- $data = $existing.data | default dict }}{{- end }}
+{{- $kid := sha256sum (randAlphaNum 32) | trunc 8 }}
+{{- $material := randBytes 32 }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.backup.keySecret }}
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep       # without these keys no backup can be read: keep an offline copy
+type: Opaque
+{{- if $existing }}
+data: {{- toYaml $data | nindent 2 }}
+{{- else }}
+stringData:
+  current: {{ $kid | quote }}
+  key-{{ $kid }}: {{ $material | quote }}
+{{- end }}
+---
+{{- end }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -40,14 +64,14 @@ spec:
           {{- end }}
           securityContext:
             runAsNonRoot: true
-            runAsUser: 70
-            runAsGroup: 70
-            fsGroup: 70
+            runAsUser: 10101
+            runAsGroup: 10101
+            fsGroup: 10101
             seccompProfile:
               type: RuntimeDefault
           containers:
             - name: backup
-              image: {{ include "shieldwaf.dbImage" . | quote }}
+              image: {{ include "shieldwaf.image" . | quote }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               securityContext:
                 allowPrivilegeEscalation: false
@@ -57,42 +81,106 @@ spec:
               env:
                 - name: PGPASSWORD
                   valueFrom: {secretKeyRef: {name: {{ .Values.secret.name }}, key: POSTGRES_PASSWORD}}
-                - name: SHIELD_DATA_KEY
-                  valueFrom: {secretKeyRef: {name: {{ .Values.secret.name }}, key: SHIELD_DATA_KEY}}
-                - name: KEEP_DAYS
-                  value: {{ .Values.backup.keepDays | quote }}
-                - name: PGHOST
+                - name: PGHOST                       # the database service (change it if you use a replicated database, see docs/CLOUD.md)
                   value: {{ include "shieldwaf.dbHost" . | quote }}
                 - name: PGUSER
                   value: shieldwaf
                 - name: PGDATABASE
                   value: shieldwaf
-              command:
-                - sh
-                - -c
-                - |
-                  set -eu
-                  umask 077
-                  f="/backups/shieldwaf-$(date -u +%Y%m%d-%H%M%S).dump.enc"
-                  pg_dump -Fc \
-                    | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:SHIELD_DATA_KEY -out "$f.part"
-                  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SHIELD_DATA_KEY -in "$f.part" | pg_restore -l > /dev/null
-                  mv "$f.part" "$f"
-                  echo "backup written and verified: $f ($(wc -c < "$f") bytes, starts with $(head -c 8 "$f" | od -An -c | tr -s ' '))"
-                  find /backups -name 'shieldwaf-*.dump.enc' -mtime +"$KEEP_DAYS" -delete
-                  find /backups -name '*.part' -mmin +120 -delete
-                  echo "backups on the volume:"; ls -1 /backups | grep '^shieldwaf-' | tail -n 20
+                - name: KEEP_DAYS
+                  value: {{ .Values.backup.keepDays | quote }}
+                - name: SHIELD_DATA
+                  value: /tmp
+                - name: BACKUP_S3_ENDPOINT
+                  valueFrom: {secretKeyRef: {name: {{ .Values.backup.s3Secret }}, key: endpoint, optional: true}}
+                - name: BACKUP_S3_BUCKET
+                  valueFrom: {secretKeyRef: {name: {{ .Values.backup.s3Secret }}, key: bucket, optional: true}}
+                - name: BACKUP_S3_PREFIX
+                  valueFrom: {secretKeyRef: {name: {{ .Values.backup.s3Secret }}, key: prefix, optional: true}}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: {secretKeyRef: {name: {{ .Values.backup.s3Secret }}, key: access-key, optional: true}}
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: {secretKeyRef: {name: {{ .Values.backup.s3Secret }}, key: secret-key, optional: true}}
+              command: ["sh", "-c"]
+              args:
+                - exec python3 /panel/backupcrypt.py backup --out /backups --keep-days "$KEEP_DAYS" --s3-bucket "${BACKUP_S3_BUCKET:-}" --s3-prefix "${BACKUP_S3_PREFIX:-}"
               resources:
                 requests: {cpu: 20m, memory: 64Mi}
                 limits: {cpu: "1", memory: 256Mi}
               volumeMounts:
                 - {name: backups, mountPath: /backups}
+                - {name: keys, mountPath: /keys, readOnly: true}
                 - {name: tmp, mountPath: /tmp}
           volumes:
             - name: backups
               persistentVolumeClaim: {claimName: shieldwaf-backups}
+            - name: keys
+              secret: {secretName: {{ .Values.backup.keySecret }}, defaultMode: 0440}
             - name: tmp
-              emptyDir: {sizeLimit: 64Mi}
+              emptyDir: {sizeLimit: 256Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shieldwaf-db-backup-verify
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.verifySchedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: shieldwaf-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10101
+            runAsGroup: 10101
+            fsGroup: 10101
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: verify
+              image: {{ include "shieldwaf.image" . | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom: {secretKeyRef: {name: {{ .Values.secret.name }}, key: POSTGRES_PASSWORD}}
+                - {name: PGHOST, value: {{ include "shieldwaf.dbHost" . | quote }}}
+                - {name: PGUSER, value: shieldwaf}
+                - {name: PGDATABASE, value: shieldwaf}
+                - {name: SHIELD_DATA, value: /tmp}
+              command: ["python3", "/panel/backupcrypt.py", "verify", "latest", "--restore-test", "--dir", "/backups"]
+              resources:
+                requests: {cpu: 20m, memory: 64Mi}
+                limits: {cpu: "1", memory: 256Mi}
+              volumeMounts:
+                - {name: backups, mountPath: /backups, readOnly: true}
+                - {name: keys, mountPath: /keys, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backups
+              persistentVolumeClaim: {claimName: shieldwaf-backups, readOnly: true}
+            - name: keys
+              secret: {secretName: {{ .Values.backup.keySecret }}, defaultMode: 0440}
+            - name: tmp
+              emptyDir: {sizeLimit: 256Mi}
 {{- if .Values.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -120,5 +208,23 @@ spec:
               app: shieldwaf-db
       ports:
         - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-backup-s3
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf-backup
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+      ports:
+        - {protocol: TCP, port: 443}
 {{- end }}
 {{- end }}

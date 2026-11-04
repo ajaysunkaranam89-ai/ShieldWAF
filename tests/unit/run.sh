@@ -5,5 +5,5 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$(dirname "$HERE")")"
 if [ -n "${PYTHON:-}" ]; then cd "$HERE" && "$PYTHON" -m unittest discover -s "$HERE" -p 'test_*.py' -v; exit $?; fi
-IMG="${IMAGE:-shieldwaf:2.3}"
+IMG="${IMAGE:-shieldwaf:2.4-dev}"
 MSYS_NO_PATHCONV=1 docker run --rm -e SHIELD_DATA=/tmp/d -v "$ROOT/panel:/panel:ro" -v "$HERE:/unit:ro" --entrypoint python3 "$IMG" -m unittest discover -s /unit -p 'test_*.py' -v

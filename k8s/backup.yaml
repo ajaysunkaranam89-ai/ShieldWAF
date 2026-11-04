@@ -1,11 +1,15 @@
-# Automatic, encrypted backups of the A Shield WAF database (configuration, users, logs, audit trail, and the encrypted shared files).
-# Apply AFTER k8s/shieldwaf.yaml:   kubectl apply -f k8s/backup.yaml
-#   * every night at 02:30 UTC a CronJob runs pg_dump, encrypts the dump (AES-256, key = SHIELD_DATA_KEY from the secret shieldwaf-db),
-#     proves it can be read back (pg_restore -l), and deletes backups older than KEEP_DAYS (14);
-#   * the files live on the volume shieldwaf-backups (5 Gi). A backup on the same cluster does not protect against losing the cluster:
-#     copy the files off it (see docs/INSTALL.md, "Backup and restore") and keep a copy of the secret, without which they cannot be decrypted.
+# Automatic, authenticated and encrypted backups of the A Shield WAF database (configuration, users, logs, audit trail, and the encrypted shared files).
+# Apply AFTER k8s/shieldwaf.yaml and after creating the backup key:
+#   sh scripts/create-backup-key.sh                (Windows: .\scripts\create-backup-key.ps1)      then      kubectl apply -f k8s/backup.yaml
+#   * every night at 02:30 UTC a CronJob runs `backupcrypt.py backup`: pg_dump -> AES-256-GCM (chunked, every chunk authenticated, a fresh random nonce per file) ->
+#     read back and authenticated -> kept 14 days on the volume shieldwaf-backups -> optionally copied to an INDEPENDENT S3-compatible destination;
+#   * the encryption keys are NOT the database secret and NOT on the backup volume: they are in the secret shieldwaf-backup-keys (key ring: `current` + key-<id>),
+#     so someone who reaches the database secret or the backup volume cannot read the backups. Keep an offline copy of the key ring (without it the backups are unreadable);
+#   * every Sunday 04:00 UTC a second CronJob restores the newest backup into a temporary database and removes it again (a backup that was never restored is not a backup);
+#   * independent destination (strongly recommended, a backup in the same cluster is lost with the cluster): create the secret shieldwaf-backup-s3 (keys endpoint, bucket,
+#     prefix, access-key, secret-key; an https:// endpoint) and every backup is also uploaded there. Adjust the policy shieldwaf-backup-s3 below to your destination;
 #   * take one right now:   kubectl create job --from=cronjob/shieldwaf-db-backup backup-now -n shieldwaf
-#   * restore:              sh scripts/restore-db.sh latest        (Windows: .\scripts\restore-db.ps1 latest)
+#   * restore:              sh scripts/restore-db.sh latest        (Windows: .\scripts\restore-db.ps1 latest)       key rotation: sh scripts/rotate-backup-key.sh
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -40,14 +44,14 @@ spec:
           automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true
-            runAsUser: 70
-            runAsGroup: 70
-            fsGroup: 70
+            runAsUser: 10101
+            runAsGroup: 10101
+            fsGroup: 10101
             seccompProfile:
               type: RuntimeDefault
           containers:
             - name: backup
-              image: shieldwaf-db:16
+              image: shieldwaf:2.4
               imagePullPolicy: IfNotPresent
               securityContext:
                 allowPrivilegeEscalation: false
@@ -57,42 +61,104 @@ spec:
               env:
                 - name: PGPASSWORD
                   valueFrom: {secretKeyRef: {name: shieldwaf-db, key: POSTGRES_PASSWORD}}
-                - name: SHIELD_DATA_KEY
-                  valueFrom: {secretKeyRef: {name: shieldwaf-db, key: SHIELD_DATA_KEY}}
-                - name: KEEP_DAYS
-                  value: "14"
                 - name: PGHOST                       # the database service (change it if you use a replicated database, see docs/CLOUD.md)
                   value: shieldwaf-db
                 - name: PGUSER
                   value: shieldwaf
                 - name: PGDATABASE
                   value: shieldwaf
-              command:
-                - sh
-                - -c
-                - |
-                  set -eu
-                  umask 077
-                  f="/backups/shieldwaf-$(date -u +%Y%m%d-%H%M%S).dump.enc"
-                  pg_dump -Fc \
-                    | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:SHIELD_DATA_KEY -out "$f.part"
-                  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SHIELD_DATA_KEY -in "$f.part" | pg_restore -l > /dev/null
-                  mv "$f.part" "$f"
-                  echo "backup written and verified: $f ($(wc -c < "$f") bytes, starts with $(head -c 8 "$f" | od -An -c | tr -s ' '))"
-                  find /backups -name 'shieldwaf-*.dump.enc' -mtime +"$KEEP_DAYS" -delete
-                  find /backups -name '*.part' -mmin +120 -delete
-                  echo "backups on the volume:"; ls -1 /backups | grep '^shieldwaf-' | tail -n 20
+                - name: KEEP_DAYS
+                  value: "14"
+                - name: SHIELD_DATA
+                  value: /tmp
+                - name: BACKUP_S3_ENDPOINT
+                  valueFrom: {secretKeyRef: {name: shieldwaf-backup-s3, key: endpoint, optional: true}}
+                - name: BACKUP_S3_BUCKET
+                  valueFrom: {secretKeyRef: {name: shieldwaf-backup-s3, key: bucket, optional: true}}
+                - name: BACKUP_S3_PREFIX
+                  valueFrom: {secretKeyRef: {name: shieldwaf-backup-s3, key: prefix, optional: true}}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: {secretKeyRef: {name: shieldwaf-backup-s3, key: access-key, optional: true}}
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: {secretKeyRef: {name: shieldwaf-backup-s3, key: secret-key, optional: true}}
+              command: ["sh", "-c"]
+              args:
+                - exec python3 /panel/backupcrypt.py backup --out /backups --keep-days "$KEEP_DAYS" --s3-bucket "${BACKUP_S3_BUCKET:-}" --s3-prefix "${BACKUP_S3_PREFIX:-}"
               resources:
                 requests: {cpu: 20m, memory: 64Mi}
                 limits: {cpu: "1", memory: 256Mi}
               volumeMounts:
                 - {name: backups, mountPath: /backups}
+                - {name: keys, mountPath: /keys, readOnly: true}
                 - {name: tmp, mountPath: /tmp}
           volumes:
             - name: backups
               persistentVolumeClaim: {claimName: shieldwaf-backups}
+            - name: keys
+              secret: {secretName: shieldwaf-backup-keys, defaultMode: 0440}
             - name: tmp
-              emptyDir: {sizeLimit: 64Mi}
+              emptyDir: {sizeLimit: 256Mi}
+---
+# Scheduled validation: restore the newest backup into a temporary database and delete it again. A failed job (look at `kubectl get jobs`) means: take a new backup now.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shieldwaf-db-backup-verify
+  namespace: shieldwaf
+spec:
+  schedule: "0 4 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: shieldwaf-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10101
+            runAsGroup: 10101
+            fsGroup: 10101
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: verify
+              image: shieldwaf:2.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom: {secretKeyRef: {name: shieldwaf-db, key: POSTGRES_PASSWORD}}
+                - {name: PGHOST, value: shieldwaf-db}
+                - {name: PGUSER, value: shieldwaf}
+                - {name: PGDATABASE, value: shieldwaf}
+                - {name: SHIELD_DATA, value: /tmp}
+              command: ["python3", "/panel/backupcrypt.py", "verify", "latest", "--restore-test", "--dir", "/backups"]
+              resources:
+                requests: {cpu: 20m, memory: 64Mi}
+                limits: {cpu: "1", memory: 256Mi}
+              volumeMounts:
+                - {name: backups, mountPath: /backups, readOnly: true}
+                - {name: keys, mountPath: /keys, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backups
+              persistentVolumeClaim: {claimName: shieldwaf-backups, readOnly: true}
+            - name: keys
+              secret: {secretName: shieldwaf-backup-keys, defaultMode: 0440}
+            - name: tmp
+              emptyDir: {sizeLimit: 256Mi}
 ---
 # The default-deny policy of the namespace also covers backup and restore pods: let them reach the database (and DNS), nothing else.
 apiVersion: networking.k8s.io/v1
@@ -120,3 +186,22 @@ spec:
               app: shieldwaf-db
       ports:
         - {protocol: TCP, port: 5432}
+---
+# Only needed for the independent S3 destination: HTTPS to addresses outside the cluster network. Narrow it to your destination's addresses if you can.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-backup-s3
+  namespace: shieldwaf
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf-backup
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+      ports:
+        - {protocol: TCP, port: 443}
