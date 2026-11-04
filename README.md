@@ -21,7 +21,7 @@ into one product:
 **Free and open source** (Apache-2.0), for Kubernetes (tested on kind) and the cloud. No secrets are stored in this repo: the database
 password is generated in your cluster and the admin account is created in your browser on first start.
 
-> **Provided as is, without warranty, and not independently audited.** It is built on proven components and tested with 192 automated
+> **Provided as is, without warranty, and not independently audited.** It is built on proven components and tested with 200 automated
 > checks, but it has not been reviewed or certified by an outside party. Read **[How secure is it?](SECURITY.md#how-secure-is-it-the-honest-summary)**
 > and the limits below before using it in production, and commission an independent test for high-value systems.
 
@@ -66,6 +66,7 @@ password is generated in your cluster and the admin account is created in your b
 | **Fast reloads** | one shared OWASP rule set instead of one per site: 80 sites apply in about 6 seconds; `nginx -t` takes about 0.2 s |
 | **Backups and database failover** | nightly **encrypted** backups (`k8s/backup.yaml`: dump, AES-256, read-back check, 14-day retention) and a one-command **restore** (`scripts/restore-db.sh` / `.ps1`); the panel survives a database primary failure (tested against a real primary and standby: about 7 seconds, no lost writes); a ready manifest for a replicated database with CloudNativePG |
 | **PostgreSQL** | configuration, attack log, sessions and audit trail live in PostgreSQL (in-cluster, hardened) or in your managed PostgreSQL |
+| **Single sign-on** | sign in with your company account through **OpenID Connect** (Microsoft Entra ID, Google, Okta, Keycloak, Authentik, Dex ...): PKCE, signature / issuer / audience / nonce / expiry checks, allowed e-mail domains and addresses, administrator list or groups, read-only by default; the password login stays as the emergency way in |
 | **Users and roles** | several administrators and read-only **viewers**; forced password change for new users; reset 2FA / revoke sessions |
 | **Rate limiting, IP control** | per-IP rate limit, per-site allow/deny lists, manual bans, **auto-ban** (like fail2ban), method allow-list |
 | **Hardening** | unknown hosts get no reply, no server version, strict timeouts/header limits, real client IP only from trusted proxies, security headers |
@@ -166,7 +167,7 @@ reloads nginx, waits until the new generation answers, and reports in `reload.st
 
 ## Test results (kind, two demo applications as upstreams)
 The suite is in [`tests/`](tests/README.md) and you can run it yourself (`bash tests/run.sh`, needs a test cluster, 15-25 minutes).
-An automated suite of **192 checks** (all passing on the final build, run on **two replicas** of a real cluster with a real PostgreSQL) plus **91 high-availability checks** (three replicas) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
+An automated suite of **200 checks** (all passing on the final build, run on **two replicas** of a real cluster with a real PostgreSQL) plus **91 high-availability checks** (three replicas) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
 recovery codes and replay refusal, session revocation after logout and after a password change, CSP/HSTS/cookie flags, metrics token,
 panel allow-list lock-out protection, SSRF refusal (loopback, metadata address and names, allowed-suffix list), import validation,
 13 attack types blocked, unknown-host drop, header-size and method limits, spoofed `X-Forwarded-For`, TLS (1.1 refused, 1.3 works,
@@ -182,6 +183,7 @@ page, rate limiting, auto-ban, backup contents and audit trail, the positive sec
 - Rate limits and the per-address connection cap are counted **per replica** (each replica sees only its own share of the traffic), so with N replicas an address can use up to N times the limit. Plan the numbers accordingly.
 - Reload time is now almost independent of the number of sites, except while an OWASP rule-set update is being canary-tested (two rule-set versions cannot be shared): then each site loads its own copy again and reloads are slower; test canaries on few sites.
 - Load balancing is simple: a request is sent to a randomly chosen (weighted) healthy backend. There is no connection reuse tuning, no slow-start and no session replication; health checks are done by one replica (the leader) and take about 20 seconds to react.
+- Single sign-on is OpenID Connect only (no SAML), and there is no hardware-key (WebAuthn) login yet; two-factor for SSO users is the identity provider's job. The sign-in is tested against Dex, a real OpenID Connect provider, not against the commercial ones.
 - Automatic certificates use the HTTP-01 check, so they need a public host name that reaches the firewall on port 80, and no wildcard names (those need a DNS check, not built in; use cert-manager for wildcards). The ACME client is tested against Pebble, the official test server; it was not run against the real Let's Encrypt here because that needs a public domain.
 Details in `SECURITY.md`.
 
@@ -199,7 +201,8 @@ report security problems privately as described in [`SECURITY.md`](SECURITY.md).
 | `Dockerfile`, `engine-entrypoint.sh`, `panel-entrypoint.sh` | the single image: engine and panel |
 | `panel/cluster.py`, `panel/sharedfs.py` | high availability: leader election, change propagation, encrypted shared files |
 | `k8s/backup.yaml`, `scripts/restore-db.*`, `k8s/ha-database/` | encrypted nightly backups, restore, and the replicated-database option |
-| `tests/` | the 192-check regression suite, the 91-check high-availability suite and their runner |
+| `panel/oidc.py` | single sign-on (OpenID Connect) |
+| `tests/` | the 200-check regression suite, the 91-check high-availability suite and their runner |
 | `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
 | `k8s/shieldwaf.yaml` | hardened namespace, replicated Deployment, disruption budget, PostgreSQL StatefulSet, services, network policies |
 | `db/Dockerfile` | the PostgreSQL image (official, pinned, OS fixes, unused `gosu` removed) |

@@ -10,4 +10,5 @@
 <label>Username</label><input type="text" name="username" autocomplete="username" required autofocus>
 <label>Password</label><input type="password" name="password" autocomplete="current-password" required>
 <p><button class="btn" style="width:100%">Sign in</button></p></form>
+{% if sso_enabled %}<p style="text-align:center;margin:8px 0 0"><span class="hint">or</span></p><p><a class="btn sec" style="width:100%;text-align:center" href="{{ url_for('sso_login') }}">{{ sso_label }}</a></p>{% endif %}
 </div></div></body></html>

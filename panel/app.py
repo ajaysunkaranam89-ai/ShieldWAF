@@ -25,6 +25,7 @@ import cluster
 import crsupdate
 import engine
 import feeds
+import oidc
 import openapi
 import pages
 import security
@@ -173,7 +174,7 @@ def _guard():
     if request.method == "POST":
         if not session.get("csrf") or not secrets.compare_digest(request.form.get("_csrf", ""), session.get("csrf", "")):
             abort(400, "bad CSRF token")
-    open_paths = ("/login", "/setup", "/healthz", "/metrics", "/static/")
+    open_paths = ("/login", "/setup", "/healthz", "/metrics", "/static/", "/sso/")
     if not request.path.startswith(open_paths) and not session_valid():
         session.clear()
         return redirect(url_for("login"))
@@ -221,7 +222,9 @@ def role():
 
 @app.context_processor
 def _ctx():
-    return {"is_admin": session.get("user") is not None and role() == "admin"}
+    sso = store.load()["settings"].get("sso", {})
+    return {"is_admin": session.get("user") is not None and role() == "admin", "sso_enabled": bool(sso.get("enabled")),
+            "sso_label": sso.get("button_label") or "Sign in with SSO"}
 
 
 def apply_cfg(cfg, action, detail=""):
@@ -561,6 +564,65 @@ def login_2fa():
         _fail(name, ip, "2fa-failed")
         flash("Wrong code.", "err")
     return render_template("login_2fa.html")
+
+
+# --- single sign-on (OpenID Connect) -----------------------------------------------------------
+def _sso_fail(msg, ip):
+    store.audit("sso", "sso-login-failed", msg[:200], ip)
+    flash(f"Single sign-on failed: {msg}", "err")
+    resp = redirect(url_for("login"))
+    resp.delete_cookie("__Host-sso", secure=True, path="/")
+    return resp
+
+
+@app.route("/sso/login")
+def sso_login():
+    sso = store.load()["settings"]["sso"]
+    if not sso["enabled"]:
+        abort(404)
+    try:
+        url, binder = oidc.begin(sso)
+    except oidc.OidcError as e:
+        return _sso_fail(str(e), client_ip())
+    resp = redirect(url)
+    # Lax (not Strict): the identity provider sends the browser back with a cross-site redirect, and this cookie must come along to prove it is the same browser
+    resp.set_cookie("__Host-sso", binder, max_age=oidc.PENDING_TTL, secure=True, httponly=True, samesite="Lax", path="/")
+    return resp
+
+
+@app.route("/sso/callback")
+def sso_callback():
+    sso = store.load()["settings"]["sso"]
+    if not sso["enabled"]:
+        abort(404)
+    ip = client_ip()
+    if request.args.get("error"):
+        return _sso_fail("the identity provider reported: " + request.args.get("error", "")[:60], ip)
+    try:
+        claims = oidc.finish(sso, request.args.get("code", ""), request.args.get("state", ""), request.cookies.get("__Host-sso", ""))
+        name, who_role = oidc.decide(sso, claims)
+    except oidc.OidcError as e:
+        return _sso_fail(str(e), ip)
+    except (ValueError, KeyError) as e:       # a provider answer that is not what the protocol says
+        return _sso_fail("unexpected answer from the identity provider (" + type(e).__name__ + ")", ip)
+    with store._lock:
+        cfg = store.load()
+        u = cfg["users"].get(name)
+        if u and not u.get("sso"):
+            return _sso_fail(f"{name} is a local account; sign in with its password", ip)
+        if u and u.get("sub") and u["sub"] != claims["sub"]:
+            return _sso_fail("the identity provider's subject for this e-mail address changed (refused; an administrator must remove the user first)", ip)
+        if not u:
+            cfg["users"][name] = {"hash": "", "created": time.time(), "totp_secret": "", "totp_enabled": False, "totp_last": 0, "recovery": [],
+                                  "role": who_role, "must_change": False, "sso": True, "sub": claims["sub"]}
+        else:
+            u["role"], u["sub"] = who_role, claims["sub"]          # the role follows the settings and the provider's groups at every sign-in
+        store.save(cfg)
+    start_session(name)
+    store.audit(name, "login", f"sso as {who_role}", ip)
+    resp = redirect(url_for("dashboard"))
+    resp.delete_cookie("__Host-sso", secure=True, path="/")
+    return resp
 
 
 @app.route("/logout", methods=["POST"])
@@ -1008,6 +1070,27 @@ def settings():
                 raise ValueError("flood defence values out of range")
             st.update({"autoban": ab, "retention_days": ret, "trusted_proxies": tp, "never_ban": nb, "panel_allow_ips": pa,
                        "upstream_allow": ua, "session_idle_min": idle, "ddos": dd})
+            if "sso_form" in request.form:             # the single sign-on section (older forms do not send it)
+                f = request.form
+                sso = {"enabled": bool(f.get("sso_enabled")), "issuer": f.get("sso_issuer", "").strip().rstrip("/"), "client_id": f.get("sso_client_id", "").strip(),
+                       "redirect_base": f.get("sso_redirect_base", "").strip().rstrip("/"), "scopes": " ".join(f.get("sso_scopes", "openid email profile").split())[:200],
+                       "allowed_domains": f.get("sso_allowed_domains", ""), "allowed_emails": f.get("sso_allowed_emails", ""), "admin_emails": f.get("sso_admin_emails", ""),
+                       "admin_groups": f.get("sso_admin_groups", ""), "default_role": f.get("sso_default_role", "viewer"),
+                       "require_verified_email": bool(f.get("sso_verified")), "button_label": (f.get("sso_label", "").strip() or "Sign in with SSO")[:40]}
+                serr = oidc.validate_settings(sso)
+                if not serr and sso["enabled"]:
+                    try:
+                        oidc.discovery(sso["issuer"])
+                    except (oidc.OidcError, ValueError) as e:
+                        serr = f"the identity provider could not be reached or is not valid: {e}"
+                if serr:
+                    flash(f"Invalid settings: {serr}", "err")
+                    return redirect(url_for("settings"))
+                if f.get("sso_client_secret", "").strip():
+                    oidc.save_secret(f["sso_client_secret"].strip()[:500])
+                if sso["enabled"] != st["sso"]["enabled"]:
+                    alerts.notify("admin_change", "Single sign-on " + ("enabled" if sso["enabled"] else "disabled"), f"by {me()} from {client_ip()}", force=True)
+                st["sso"] = sso
             if "acme_form" in request.form:            # the automatic-certificate section (older forms do not send it)
                 em, di = request.form.get("acme_email", "").strip(), request.form.get("acme_directory", "").strip()
                 if em and not EMAIL_RE.match(em):

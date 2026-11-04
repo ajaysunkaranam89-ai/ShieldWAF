@@ -8,7 +8,7 @@ regulated or high-value systems. Date of this review: 2026-11-03, version 2.3.
 **What was re-run for 2.3 (high availability, shared rule set, Dashboards):** Bandit, Trivy (image and manifests) and gitleaks, plus the automated tests
 (sections 1, 4 and 6 below are updated). The OWASP ZAP baseline (section 5) was run on 2.2 and was **not** repeated for 2.3; the panel gained two read-only pages (Cluster, Dashboards)
 that follow the same rules as the others (login, escaped output, strict CSP), but they were not scanned separately.
-New things to review in 2.3 (in addition to the Pebble-tested ACME client, `panel/acme.py`): the encrypted file sharing through the database (`panel/sharedfs.py`: authenticated encryption, fixed list of path shapes, checked archive extraction),
+New things to review in 2.3 (in addition to the Pebble-tested ACME client, `panel/acme.py`, and the Dex-tested single sign-on, `panel/oidc.py`): the encrypted file sharing through the database (`panel/sharedfs.py`: authenticated encryption, fixed list of path shapes, checked archive extraction),
 the cluster-wide lock and leader election (`panel/store.py`, `panel/cluster.py`), and the per-site settings dispatch inside the shared rule set (`panel/engine.py`: wildcard and exact host names,
 fail-closed default for a request that matches no site, tested with upper-case and trailing-dot host names).
 
@@ -55,7 +55,7 @@ Panel warnings and actions:
 Warnings on the protected application are about the application's own responses (for example no Content-Security-Policy header from the sample app).
 A WAF should not invent application-specific policies; the WAF adds the generic ones (X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy, HSTS).
 
-## 6. Automated attack and abuse tests (192 checks + HA checks, run on a live cluster with PostgreSQL)
+## 6. Automated attack and abuse tests (200 checks + HA checks, run on a live cluster with PostgreSQL)
 All pass. The functional suite runs on **two replicas**; a second suite adds the high-availability checks on three replicas (shared sessions, keys and certificates, concurrent administrators, 80 sites, leader failure, database outage, rolling restart under load). They include attacks against the product itself, not only against the applications behind it:
 weak and wrong passwords, setup-code abuse, login lockout, two-factor replay and recovery-code reuse, session revocation after logout and after
 password change, stolen-cookie reuse, missing CSRF token, CSP / HSTS / cookie flags, metrics without token, panel allow-list self-lockout,

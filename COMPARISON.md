@@ -42,6 +42,7 @@ public documentation. Items marked **(?)** are not verified here. A Shield WAF i
 | Safe apply (test, confirm live, rollback) | **yes** | (?) | reload errors possible |
 | Runs on Kubernetes | **yes, native, hardened (restricted PSS, read-only FS, NetworkPolicy)** | **no official support: Docker Compose only, failed here** | yes (Helm chart, 6 pods) |
 | Several upstreams per site (balancing, failover, health checks) | **yes**: weights, backups, ip-hash, retry of reads, active health checks | yes | yes (reverse proxy upstream list) |
+| Single sign-on for the admin panel | **yes: OpenID Connect** (no SAML) | (?) | no (plugin / Pro) |
 | High availability | **yes: 2+ replicas on one shared database, tested (replica kill, database outage, rolling restart)** | (?) not tested here | multi-instance with an external database (not tested here) |
 | Reload with many sites | **shared rule set: 80 sites in about 6 s** | (?) | (?) |
 | Memory used here | **about 250 MB per replica** | about 1 GB (7 containers) | about 1 GB (6 pods) |

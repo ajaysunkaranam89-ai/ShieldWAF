@@ -27,6 +27,24 @@
 <div class="card" style="margin-top:14px"><b>Real client IP</b>
   <p class="hint">If A Shield WAF sits behind a cloud load balancer or CDN, list that proxy's CIDRs here so the real client IP is read from X-Forwarded-For. Leave empty when clients connect directly: a spoofed header is then ignored.</p>
   <textarea name="trusted_proxies" placeholder="10.0.0.0/8">{{ st.trusted_proxies }}</textarea></div>
+<div class="card" style="margin-top:14px"><b>Single sign-on (OpenID Connect)</b>
+  <p class="hint">Let people sign in with their company account (Microsoft Entra ID, Google, Okta, Keycloak ...). Register this panel at your identity provider as a <i>web application</i> with the redirect address shown below, then fill in the fields.
+  The password login stays available as the emergency way in. <b>Who may sign in is decided here, not by the provider:</b> nobody is allowed until you list a domain or addresses. Two-factor login is the identity provider's job for these accounts.</p>
+  <input type="hidden" name="sso_form" value="1">
+  <label class="chk"><input type="checkbox" name="sso_enabled" {{ 'checked' if st.sso.enabled }}> Enable single sign-on</label>
+  <div class="row"><div><label>Issuer address <small>(https://..., the address that serves /.well-known/openid-configuration)</small></label><input type="text" name="sso_issuer" value="{{ st.sso.issuer }}" placeholder="https://login.example.com/realms/main"></div>
+  <div><label>This panel's public address <small>(users open it here)</small></label><input type="text" name="sso_redirect_base" value="{{ st.sso.redirect_base }}" placeholder="https://waf-admin.example.com"></div></div>
+  {% if st.sso.redirect_base %}<p class="hint">Redirect address to register at the provider: <span class="mono">{{ st.sso.redirect_base }}/sso/callback</span></p>{% endif %}
+  <div class="row"><div><label>Client ID</label><input type="text" name="sso_client_id" value="{{ st.sso.client_id }}"></div>
+  <div><label>Client secret <small>(leave empty to keep the saved one; it is never shown again)</small></label><input type="password" name="sso_client_secret" autocomplete="off"></div></div>
+  <div class="row"><div><label>Allowed e-mail domains <small>(one per line)</small></label><textarea name="sso_allowed_domains" rows="2" placeholder="example.com">{{ st.sso.allowed_domains }}</textarea></div>
+  <div><label>Allowed e-mail addresses <small>(one per line, in addition to the domains)</small></label><textarea name="sso_allowed_emails" rows="2">{{ st.sso.allowed_emails }}</textarea></div></div>
+  <div class="row"><div><label>Administrators <small>(e-mail addresses, one per line)</small></label><textarea name="sso_admin_emails" rows="2">{{ st.sso.admin_emails }}</textarea></div>
+  <div><label>Administrator groups <small>(group names from the provider's "groups" claim, optional)</small></label><textarea name="sso_admin_groups" rows="2">{{ st.sso.admin_groups }}</textarea></div></div>
+  <div class="row"><div><label>Everyone else becomes</label><select name="sso_default_role"><option value="viewer" {{ 'selected' if st.sso.default_role != 'admin' }}>read-only viewer (recommended)</option><option value="admin" {{ 'selected' if st.sso.default_role == 'admin' }}>administrator</option></select></div>
+  <div><label>Button text</label><input type="text" name="sso_label" value="{{ st.sso.button_label }}" maxlength="40"></div></div>
+  <label class="chk"><input type="checkbox" name="sso_verified" {{ 'checked' if st.sso.require_verified_email }}> Only accept addresses the provider has verified (recommended)</label>
+  <input type="hidden" name="sso_scopes" value="{{ st.sso.scopes }}"></div>
 <div class="card" style="margin-top:14px"><b>Automatic HTTPS certificates (Let's Encrypt)</b>
   <p class="hint">Sites whose certificate source is <i>Let's Encrypt (automatic)</i> get a free certificate and renewals 30 days before it expires. Needs: a public host name that points to this firewall, and port 80 reachable from the internet (the authority checks
   <span class="mono">http://your-host/.well-known/acme-challenge/...</span>). Wildcard names are not supported. Country rules or IP allow-lists on the site can block the authority's check.</p>

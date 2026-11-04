@@ -1,10 +1,10 @@
 # Regression and security test suite
 
-Two suites run against **real, throw-away copies** of A Shield WAF on a Kubernetes cluster: `functional_test.py` (**192** checks, on **two replicas**) and
+Two suites run against **real, throw-away copies** of A Shield WAF on a Kubernetes cluster: `functional_test.py` (**200** checks, on **two replicas**) and
 `ha_test.py` (**91** high-availability checks on **three replicas**: shared sessions and certificates, a change served by every replica, concurrent administrators,
 80 sites reloaded in seconds with correct per-site behaviour, an automatic certificate obtained from a Pebble test authority and served by every replica, several upstreams per site (spreading, weights, keep-a-visitor, failover with a dead backend, health checks out and back in), killing the leader, a database outage, a rolling restart under load with zero failed requests).
 `functional_test.py` drives the firewall through its GUI and through the firewall,
-and checks **192** behaviours: setup and login security, two-factor login, lockouts, sessions, SSRF protection, attack blocking (13 types),
+and checks **200** behaviours: setup and login security, two-factor login, lockouts, sessions, SSRF protection, attack blocking (13 types),
 TLS, the anti-bot challenge, login gate, maintenance and service-down pages, rate limiting, auto-ban, threat feeds, country rules,
 under-attack mode, roles, alert delivery (webhook, syslog, CEF, HTTP collector, email), the OpenAPI validator, the OWASP rule-update cycle
 (a real download from GitHub) and persistence in PostgreSQL across a restart.
@@ -24,6 +24,7 @@ kubectl delete namespace shieldwaf-test sink-test shieldwaf-demo
 ```
 
 `backup_test.py` takes an encrypted backup, damages the database, restores it and checks that the firewall is running again (`SUITES=backup bash tests/run.sh`). `dbfailover.sh` runs the panel's database layer against a real PostgreSQL primary and standby in Docker and fails the primary over (no cluster needed).
+`sso.sh` runs the single sign-on flow against Dex, a real OpenID Connect provider, in Docker: a normal sign-in, roles, refusals, replay and stolen-callback attacks, and forged ID tokens (no cluster needed; 44 checks).
 `acme.sh` runs the certificate client against Pebble in throw-away Docker containers (needs Docker and internet access to pull the images); it does not need a cluster.
 
 ## Notes

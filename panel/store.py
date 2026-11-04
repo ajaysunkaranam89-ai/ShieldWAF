@@ -86,6 +86,10 @@ DEFAULT_SETTINGS = {
     # OWASP rule-set updates (see crsupdate.py): "baked" = the version inside the image
     "crs": {"active": "baked", "previous": "", "staged": "", "staged_sha256": "", "staged_at": 0, "latest": "", "checked_at": 0,
             "error": "", "auto_stage": True},
+    # single sign-on for the admin panel (OpenID Connect), see oidc.py; the client secret lives in /data/secrets/oidc.json, never here
+    "sso": {"enabled": False, "issuer": "", "client_id": "", "redirect_base": "", "scopes": "openid email profile", "allowed_domains": "",
+            "allowed_emails": "", "admin_emails": "", "admin_groups": "", "default_role": "viewer", "require_verified_email": True,
+            "button_label": "Sign in with SSO"},
     # automatic HTTPS certificates (ACME / Let's Encrypt), see acme.py
     "acme": {"email": "", "directory": "https://acme-v02.api.letsencrypt.org/directory", "agreed": False},
     # layer-7 DoS defence: automatic "under attack" mode when one site receives too many requests per second
@@ -316,6 +320,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS counters(k TEXT PRIMARY KEY, v BIGINT);
     CREATE TABLE IF NOT EXISTS nodes(name TEXT PRIMARY KEY, ts DOUBLE PRECISION, started DOUBLE PRECISION, applied_cfg BIGINT, applied_files BIGINT,
         ok INTEGER, msg TEXT, version TEXT, engine_ok INTEGER, info TEXT);
+    CREATE TABLE IF NOT EXISTS sso_pending(state TEXT PRIMARY KEY, nonce TEXT, verifier TEXT, binder TEXT, created DOUBLE PRECISION);
     CREATE TABLE IF NOT EXISTS sfiles(path TEXT PRIMARY KEY, kind TEXT, sha TEXT, mode INTEGER, data TEXT, updated DOUBLE PRECISION)
     """
     for attempt in range(40):          # the database pod may still be starting

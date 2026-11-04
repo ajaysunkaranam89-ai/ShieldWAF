@@ -97,6 +97,13 @@ Webhook addresses, SMTP passwords and tokens are secrets: stored in protected fi
 (Site settings, WAF section) run the new rules in detect-only mode, so you can compare. When satisfied tick the confirmation and **Promote to all sites**; **Roll back** returns to the previous set.
 Updates are never switched on without an administrator.
 
+## Single sign-on (company accounts)
+Instead of (or next to) passwords, people can sign in with their company account through **OpenID Connect**.
+1. **At your identity provider** (Microsoft Entra ID, Google Workspace, Okta, Keycloak, Authentik ...) register a new *web application / OIDC client*. The redirect address is your panel's public address plus `/sso/callback`, for example `https://waf-admin.example.com/sso/callback`. Note the **client ID**, the **client secret** and the **issuer address** (the address that serves `/.well-known/openid-configuration`; for Entra ID it is `https://login.microsoftonline.com/<tenant-id>/v2.0`).
+2. **In the panel:** Settings, *Single sign-on*: tick *Enable*, enter the issuer address, the panel's public address, the client ID and secret, and **who may sign in**: allowed e-mail domains and/or addresses. Nobody is allowed until you list somebody. Name your administrators (e-mail addresses, or group names if your provider sends a `groups` claim). Everyone else becomes a **read-only viewer** (or an administrator if you choose so; think twice). Save: the panel checks that it can reach the provider.
+3. The login page now shows a button. The first sign-in creates the user (name = e-mail address); the role is re-evaluated at every sign-in, so removing someone from the administrator list or group takes effect at their next login. Remove a person completely under **Users**.
+**Good to know:** the password login stays available (it is your way in if the provider is down; keep a strong local administrator with two-factor login). Two-factor login for SSO users is whatever your identity provider enforces. The provider must give a **verified** e-mail address (you can relax this in the settings, but it is safer not to). If the provider ever sends a different subject for the same e-mail address, the sign-in is refused until an administrator removes the user (protection against a re-used address). Sign-in attempts and refusals are in the **Audit trail**.
+
 ## Users, roles and two-factor login
 - **Users:** add administrators (full control) and **viewers** (read-only dashboard, sites, attack log). New users must choose their own password at first login.
 - **Security (2FA):** scan or type the key into any authenticator app, confirm a code, **save the 8 recovery codes** (shown once).
