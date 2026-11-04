@@ -270,7 +270,8 @@ def balancing(site):
 
 
 def _proxy_opts(site):
-    return PROXY_OPTS + (["    proxy_ssl_name $host;"] if site.get("_pinned") is not None else [])      # pinned upstream is an address: send the visitor's host name as SNI
+    score = '    proxy_set_header X-Shield-Bot-Score "$bot_score";' if (site.get("bots") or {}).get("mode", "off") != "off" else '    proxy_set_header X-Shield-Bot-Score "";'     # never trust a client-sent value
+    return PROXY_OPTS + [score] + (["    proxy_ssl_name $host;"] if site.get("_pinned") is not None else [])      # pinned upstream is an address: send the visitor's host name as SNI
 
 
 def _lb_conf(site):
@@ -351,6 +352,15 @@ def _common(site, gen, feed_on, layout="legacy"):
               f"  set $chal_scope {'all' if ch['scope'] == 'all' else 'pages'};", f'  set $chal_excl "{excl}";',
               "  location = /__shield/page { internal; modsecurity off; js_content challenge.page; }",
               "  location = /__shield/verify { modsecurity off; limit_req zone=chal_verify burst=10 nodelay; js_content challenge.verify; }"]
+    b = site.get("bots") or {}
+    if b.get("mode", "off") != "off":
+        mode = b["mode"] if not (b["mode"] == "challenge" and not ch["enabled"]) else "block"       # a challenge needs the site's proof-of-work page
+        bexcl = " ".join(p for p in split_lines(b.get("exclude_paths", "")) if re.fullmatch(r"/[A-Za-z0-9._~/\-]*", p))
+        ballow = " ".join(a for a in split_lines(b.get("allow_ua", "")) if re.fullmatch(r"[A-Za-z0-9._/-]{2,60}", a))
+        L += [f"  set $bot_mode {mode};", f"  set $bot_thr {int(b['threshold'])};", f'  set $bot_excl "{bexcl}";', f'  set $bot_allow "{ballow}";',
+              '  if ($bot_action = "block") { return 403; }']
+        if mode == "challenge":
+            L.append('  if ($bot_action = "challenge") { rewrite ^ /__shield/page last; }')
     if site["maintenance"]:
         L += ["  error_page 503 /__shield_maintenance.html;",
               f"  location = /__shield_maintenance.html {{ internal; root {pdir}; add_header Retry-After 1800 always; add_header Cache-Control no-store always; }}",
@@ -468,6 +478,7 @@ def _render(cfg):
     try:
         st = cfg["settings"]
         now = time.time()
+        botlog = ',"bot":"$bot_score"' if any((s.get("bots") or {}).get("mode", "off") != "off" for s in cfg["sites"]) else ""     # the score in the access log, only when used
         with open(f"{gen}/bans.conf", "w") as f:
             f.write("".join(f"deny {b['ip']};\n" for b in cfg["bans"] if b["until"] > now))
         real_ip = ""
@@ -567,13 +578,17 @@ http {{
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
   ssl_prefer_server_ciphers off; ssl_session_tickets off; ssl_session_cache shared:SSL:10m; ssl_session_timeout 1h;
-  log_format shield escape=json '{{"ts":$msec,"ip":"$remote_addr","host":"$host","method":"$request_method","uri":"$request_uri","status":$status,"rt":$request_time,"ua":"$http_user_agent"}}';
+  log_format shield escape=json '{{"ts":$msec,"ip":"$remote_addr","host":"$host","method":"$request_method","uri":"$request_uri","status":$status,"rt":$request_time,"ua":"$http_user_agent"{botlog}}}';
   access_log {LOG_DIR}/access.log shield;
   resolver {_dns_servers()} valid=10s ipv6=off;
   map_hash_bucket_size 256;                  # upstream addresses are used as map keys (failover to the next upstream)
   map $http_upgrade $connection_upgrade {{ default upgrade; '' close; }}
+  js_path {NJS_DIR};
   js_import challenge from {NJS_DIR}/challenge.js;
   js_set $chal_need challenge.need;
+  js_import bots from {NJS_DIR}/bots.js;
+  js_set $bot_score bots.score;
+  js_set $bot_action bots.action;
   limit_conn_zone $binary_remote_addr zone=perip:10m;
   limit_req_zone $binary_remote_addr zone=chal_verify:10m rate=10r/s;
   geo $shield_feed {{ default 0;{(chr(10) + "    include " + gen + "/feeds.geo;") if feed_on else ""} }}

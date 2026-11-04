@@ -326,6 +326,11 @@ def validate_site(s, cfg):
         return "Challenge: difficulty 3-6, lifetime 1-720 hours, scope pages or all."
     if any(not PATH_RE.match(p) for p in engine.split_lines(c["exclude_paths"])):
         return "Challenge exclude paths must be URL paths like /api/ ."
+    bt = s["bots"]
+    if bt["mode"] not in ("off", "detect", "block", "challenge") or not 1 <= int(bt["threshold"]) <= 30:
+        return "Bot protection: mode off, detect, block or challenge; threshold 1-30."
+    if any(not PATH_RE.match(p) for p in engine.split_lines(bt["exclude_paths"])) or any(not re.fullmatch(r"[A-Za-z0-9._/-]{2,60}", a) for a in engine.split_lines(bt["allow_ua"])):
+        return "Bot protection: exclude paths must look like /api/ ; allowed user agents are plain words (letters, digits . _ / -), one per line."
     ps = s["positive"]
     if any(not re.fullmatch(r"=?/[A-Za-z0-9._~/\-]*", x) for x in engine.split_lines(ps["paths"])):
         return "Allowed paths must look like /api/ (prefix) or =/ (exact)."
@@ -423,6 +428,8 @@ def parse_site(form, cfg, existing=None):
             "challenge": {"enabled": bool(form.get("chal_enabled")), "difficulty": int(form.get("chal_difficulty", 4)),
                           "ttl_hours": int(form.get("chal_ttl", 12)), "scope": form.get("chal_scope", "pages"),
                           "exclude_paths": form.get("chal_exclude", "")},
+            "bots": {"mode": form.get("bot_mode", "off"), "threshold": int(form.get("bot_threshold", 6) or 6), "exclude_paths": form.get("bot_exclude", ""),
+                     "allow_ua": form.get("bot_allow", "")},
             "positive": {"enabled": bool(form.get("pos_enabled")), "paths": form.get("pos_paths", ""),
                          "content_types": form.get("pos_types", ""), "max_url": int(form.get("pos_max_url", 2048) or 2048)},
             "openapi": {"mode": form.get("oa_mode", "off"), "spec": form.get("oa_spec", ""), "strict": bool(form.get("oa_strict")),
@@ -1487,7 +1494,7 @@ def backup_import():
             for k in s:
                 if k in raw and isinstance(raw[k], type(s[k])):
                     s[k] = raw[k]
-            for k in ("rate_limit", "tls", "auth", "challenge", "positive", "geo"):   # nested dicts: merge onto defaults
+            for k in ("rate_limit", "tls", "auth", "challenge", "bots", "positive", "geo"):   # nested dicts: merge onto defaults
                 if isinstance(raw.get(k), dict):
                     s[k] = {**store.DEFAULT_SITE[k], **{kk: vv for kk, vv in raw[k].items() if kk in store.DEFAULT_SITE[k]}}
             s["auth"]["users"] = {}

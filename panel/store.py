@@ -119,6 +119,7 @@ DEFAULT_SITE = {
     "maintenance": False,
     "down_page": True,
     "rate_limit": {"enabled": False, "rps": 10, "burst": 20, "scope": "replica"},
+    "bots": {"mode": "off", "threshold": 6, "exclude_paths": "", "allow_ua": ""},     # header-behaviour bot score: off | detect | block | challenge (needs the proof-of-work challenge)
     "allow_ips": [], "deny_ips": [],
     "block_bots": True, "sec_headers": True,
     "max_body_mb": 10,
