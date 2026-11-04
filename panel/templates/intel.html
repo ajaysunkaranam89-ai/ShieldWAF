@@ -22,6 +22,19 @@
     <p><button class="btn sec">Add feed</button></p></form></details>
 </div>
 
+<div class="card" style="margin-top:14px"><b>CrowdSec</b>
+  <p class="hint">Use the community blocklist and the decisions of your own <a href="https://docs.crowdsec.net/" target="_blank" rel="noopener">CrowdSec</a> server: this panel acts as a bouncer, pulls the ban decisions every 30 seconds and refuses those addresses
+    together with the feeds above. Create the key on the CrowdSec server with <span class="mono">cscli bouncers add shieldwaf</span>. The key is stored encrypted and is never shown again.</p>
+  <form method="post"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="act" value="crowdsec">
+    <label class="chk"><input type="checkbox" name="cs_enabled" {{ 'checked' if cs.enabled }}> Use CrowdSec decisions (every site)</label>
+    <div class="row"><div><label>Local API address <small>e.g. http://crowdsec:8080</small></label><input type="text" name="cs_url" value="{{ cs.url }}" placeholder="http://crowdsec:8080"></div>
+      <div><label>Bouncer key {% if cs_key %}<small>(a key is stored; leave empty to keep it)</small>{% endif %}</label><input type="password" name="cs_key" autocomplete="off"></div></div>
+    <p><button class="btn">Save</button></p></form>
+  <p>Status: {% if cs.enabled and cs_last %}<span class="pill p-ok">{{ cs.last_count }} decisions</span> <span class="hint">last successful pull {{ cs_last|int|ts }}</span>
+    {% elif cs.enabled %}<span class="pill p-warn">waiting for the first answer</span>{% else %}<span class="pill p-info">off</span>{% endif %}
+    {% if cs.last_error %}<span class="pill p-err">{{ cs.last_error }}</span>{% endif %}</p>
+</div>
+
 <div class="card" style="margin-top:14px"><b>Country data</b>
   <p class="hint">Used by the per-site country rules (Sites, edit, "Country rules"). Built from the free public allocation files of the five regional internet registries. It shows the <em>registered</em> country of an address block, not the physical location of a user (VPNs and cloud networks can differ).</p>
   <p>Status: {% if geo.updated %}<span class="pill p-ok">{{ geo.countries }} countries, {{ geo.blocks }} blocks</span> <span class="hint">updated {{ geo.updated|int|ts }}</span>{% else %}<span class="pill p-warn">not downloaded yet</span>{% endif %}

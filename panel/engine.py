@@ -510,7 +510,7 @@ def _render(cfg):
         canary = crs_staged is not None and any(s["crs_channel"] == "canary" for s in protected)
         layout = "shared" if (SHARED_RULES and not canary) else "legacy"
         t_render = time.time()
-        feed_src = feeds.feed_file() if st["feeds"]["enabled"] else None
+        feed_src = feeds.feed_file() if (st["feeds"]["enabled"] or st.get("crowdsec", {}).get("enabled")) else None
         feed_on = bool(feed_src)
         if feed_on:
             shutil.copy(feed_src, f"{gen}/feeds.geo")

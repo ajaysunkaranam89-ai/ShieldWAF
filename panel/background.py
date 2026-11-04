@@ -15,6 +15,7 @@ from datetime import datetime
 import acme
 import alerts
 import cluster
+import crowdsec
 import netguard
 import ratelimit
 import crsupdate
@@ -177,7 +178,7 @@ def _protected_nets(cfg):
 def run_feed_refresh():
     """Download the reputation feeds (outside the lock: it can take a while) and apply the result. Returns (ok, count, error)."""
     cfg0 = store.load()
-    ok, count, err = feeds.refresh_feeds(cfg0, _protected_nets(cfg0))
+    ok, count, err = feeds.refresh_feeds(cfg0, _protected_nets(cfg0), crowdsec.entries() if cfg0["settings"]["crowdsec"]["enabled"] else ())
     with store._lock:
         cfg = store.load()
         f = cfg["settings"]["feeds"]
@@ -201,6 +202,33 @@ def feeds_tick():
     if now - f["last_ok"] > int(f["refresh_hours"]) * 3600 and now - float(store.meta_get("feeds_last_try", 0)) > 900:
         store.meta_set("feeds_last_try", now)
         run_feed_refresh()
+
+
+def crowdsec_tick():
+    """Leader only, every 30 s: pull the CrowdSec decisions, merge them with the other feeds and apply the list when it changed."""
+    cfg0 = store.load()
+    if not cfg0["settings"]["crowdsec"]["enabled"]:
+        return
+    never = _protected_nets(cfg0)
+    ok, count, err = crowdsec.pull(cfg0, never)
+    before = feeds.feed_sha()
+    feeds.rebuild(never, crowdsec.entries())          # also drops decisions whose time is over, even when the server could not be reached
+    changed = before != feeds.feed_sha()
+    c0 = cfg0["settings"]["crowdsec"]
+    if ok:
+        store.meta_set("crowdsec_last_ok", time.time())
+    if changed or err != c0["last_error"] or (ok and count != c0["last_count"]):
+        with store._lock:
+            cfg = store.load()
+            c = cfg["settings"]["crowdsec"]
+            c["last_error"] = err
+            if ok:
+                c["last_count"] = count
+            if changed and _applier:
+                _applier(cfg)
+            store.save(cfg)
+        if err and not c0["last_error"]:
+            alerts.notify("feeds_failed", "CrowdSec pull failed", err)
 
 
 def geo_done():
@@ -588,6 +616,6 @@ def start(applier):
     alerts.start()
     # every replica: its own logs, its own engine, local clean-up. Leader only: everything that must happen once for the whole cluster.
     local = ((ingest_access, 2), (ingest_audit, 2), (prune, 3600), (health_tick, 5))
-    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600), (upstream_health_tick, 10), (ssrf_tick, 15), (audit_tick, 600))
+    once = ((autoban_tick, 15), (feeds_tick, 600), (crowdsec_tick, 30), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600), (upstream_health_tick, 10), (ssrf_tick, 15), (audit_tick, 600))
     for fn, every in local + tuple((cluster.leader_only(f), e) for f, e in once):
         threading.Thread(target=_loop, args=(fn, every), daemon=True, name=fn.__name__).start()
