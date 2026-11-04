@@ -785,8 +785,9 @@ check("importing a config with a metadata-address upstream is refused", "Import 
 s, exp, _ = P.req("/backup/export")
 ex = json.loads(exp)
 check("export contains no password hashes, keys or metrics token", "$6$" not in exp and "PRIVATE KEY" not in exp and "metrics_token" not in exp and "hash" not in exp)
-s, html, _ = P.req("/audit")
-check("audit trail records source IPs and security events", "login-failed" in html and "2fa enabled" in html and "127.0.0.1" in html)
+s, html, _ = P.req("/audit?q=login-failed")            # the audit page is paginated (50 records) and filterable since 2.4
+s2, html2, _ = P.req("/audit?q=2fa+enabled")
+check("audit trail records source IPs and security events", "login-failed" in html and "2fa enabled" in html2 and "127.0.0.1" in html, (s, s2))
 s, html, _ = P.req("/logs?only=blocked")
 check("attack log still works", "blocked" in html)
 
