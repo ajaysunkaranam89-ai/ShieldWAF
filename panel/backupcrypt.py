@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import struct
 import subprocess
@@ -293,6 +294,76 @@ def resolve_file(directory, name):
     return p
 
 
+def cmd_basebackup(a):
+    """A physical base backup (pg_basebackup, tar format, no WAL inside) encrypted like every other backup: the starting point for point-in-time recovery together
+    with the archived WAL files (db/archive-wal.sh). Needs a role with the REPLICATION attribute (the database owner has it)."""
+    current, ring = load_keyring()
+    os.makedirs(a.out, exist_ok=True)
+    final = os.path.join(a.out, f"shieldwaf-base-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}.swbk")
+    part = final + ".part"
+    pb = subprocess.Popen(["pg_basebackup", "-D", "-", "-Ft", "-X", "none", "-c", "fast", "--no-sync"], stdout=subprocess.PIPE)
+    try:
+        with open(part, "wb") as dst:
+            os.chmod(part, 0o640)         # encrypted; the group (the volume's fsGroup) may read it, so the restore job of the database user can
+            total, chunks = encrypt_stream(pb.stdout, dst, ring[current], current)
+        if pb.wait() != 0:
+            raise BackupError("pg_basebackup failed")
+        if total < 1000:
+            raise BackupError("the base backup is empty")
+        t, _ = verify_file(part, ring)
+        if t != total:
+            raise BackupError("read-back size differs")
+        os.replace(part, final)
+    finally:
+        if pb.poll() is None:
+            pb.kill()
+        if os.path.exists(part):
+            os.remove(part)
+    json.dump({"file": os.path.basename(final), "created": datetime.datetime.utcnow().isoformat() + "Z", "plain_bytes": total, "key_id": current, "format": "SWBK v1 AES-256-GCM, pg_basebackup tar"},
+              open(final + ".json", "w"))
+    print(f"base backup written and verified: {final} ({os.path.getsize(final)} bytes, key {current})", flush=True)
+    prune(a.out, a.keep_days)
+    _log("backup", f"base backup {os.path.basename(final)} {os.path.getsize(final)} bytes key {current}")
+
+
+TARGET_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?( ?(Z|[+-]\d{2}(:\d{2})?))?")
+
+
+def cmd_pitr_prepare(a):
+    """Lay out a data directory for point-in-time recovery: the verified, decrypted base backup, recovery.signal and the recovery settings. Start PostgreSQL on it
+    afterwards (it replays the archived WAL up to --time, or to the end of the archive, and then becomes a normal database)."""
+    import tarfile
+    _cur, ring = load_keyring()
+    src = resolve_file(a.dir, a.file)
+    verify_file(src, ring)                                                    # the whole file is authenticated BEFORE anything is written
+    if not re.fullmatch(r"/[A-Za-z0-9._/-]{1,200}", a.archive):
+        raise BackupError("--archive must be a plain absolute path")
+    if a.time and not TARGET_TIME.fullmatch(a.time):
+        raise BackupError("--time must look like 2026-11-04 12:30:00+05:30 (a time zone is strongly recommended)")
+    if os.path.exists(a.pgdata) and os.listdir(a.pgdata):
+        raise BackupError(f"{a.pgdata} is not empty: it will not be overwritten")
+    os.makedirs(a.pgdata, mode=0o700, exist_ok=True)
+    tarpath = a.pgdata.rstrip("/") + ".base.tar.tmp"
+    try:
+        with open(src, "rb") as f, open(tarpath, "wb") as out:
+            os.chmod(tarpath, 0o600)
+            decrypt_stream(f, out, ring)
+        with tarfile.open(tarpath) as tf:
+            tf.extractall(a.pgdata, filter="data")
+    finally:
+        if os.path.exists(tarpath):
+            os.remove(tarpath)
+    os.chmod(a.pgdata, 0o700)
+    conf = ["restore_command = 'cp " + a.archive + '/%f "%p"' + "'", "recovery_target_action = 'promote'"]
+    if a.time:
+        conf.append(f"recovery_target_time = '{a.time}'")
+    with open(os.path.join(a.pgdata, "postgresql.auto.conf"), "a") as f:
+        f.write(chr(10) + "# point-in-time recovery (backupcrypt.py pitr-prepare)" + chr(10) + chr(10).join(conf) + chr(10))
+    open(os.path.join(a.pgdata, "recovery.signal"), "w").close()
+    print(f"data directory {a.pgdata} prepared from {os.path.basename(src)}; recovery target: {a.time or 'the end of the archived WAL'}. Start PostgreSQL on it now.", flush=True)
+    _log("pitr-prepare", f"{os.path.basename(src)} target {a.time or 'end of archive'}")
+
+
 def cmd_verify(a):
     _cur, ring = load_keyring()
     p = resolve_file(a.dir, a.file)
@@ -392,9 +463,18 @@ def main(argv=None):
             v.add_argument("--restore-test", action="store_true")
     for name in ("reencrypt", "list"):
         sub.add_parser(name).add_argument("--dir", default="/backups")
+    bb = sub.add_parser("basebackup")
+    bb.add_argument("--out", default="/backups/base")
+    bb.add_argument("--keep-days", type=int, default=14)
+    pp = sub.add_parser("pitr-prepare")
+    pp.add_argument("file")
+    pp.add_argument("--dir", default="/backups/base")
+    pp.add_argument("--pgdata", required=True)
+    pp.add_argument("--archive", required=True)
+    pp.add_argument("--time", default="")
     a = ap.parse_args(argv)
     try:
-        {"backup": cmd_backup, "verify": cmd_verify, "restore": cmd_restore, "reencrypt": cmd_reencrypt, "list": cmd_list}[a.cmd](a)
+        {"backup": cmd_backup, "verify": cmd_verify, "restore": cmd_restore, "reencrypt": cmd_reencrypt, "list": cmd_list, "basebackup": cmd_basebackup, "pitr-prepare": cmd_pitr_prepare}[a.cmd](a)
     except BackupError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2

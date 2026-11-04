@@ -70,8 +70,30 @@ start again. `YES=1` skips the question. A backup that does not exist or is dama
 5. Secrets that are not in the database must be recreated from your records: the database secret (`scripts/create-db-secret.sh` creates a new one; the shared-file
    encryption key `SHIELD_DATA_KEY` must be the **old** one, otherwise certificates and keys inside the backup cannot be decrypted. Keep an offline copy of `shieldwaf-db` too).
 
-Recovery objectives with the defaults: RPO up to 24 hours (nightly), RTO about 10–20 minutes for a small database. Point-in-time recovery needs WAL archiving, which this
-release does not provide (see `docs/KNOWN_LIMITATIONS.md` / the 2.4 report).
+Recovery objectives with the defaults: RPO up to 24 hours (nightly), RTO about 10–20 minutes for a small database. With the optional point-in-time recovery below the RPO is minutes.
+
+## Point-in-time recovery (optional, module J)
+
+The nightly dump gives a recovery point of up to 24 hours. With WAL archiving the database can be recovered to **any moment** after the last base backup (for example: five minutes before somebody deleted a table).
+
+* What it consists of: every finished WAL segment is copied to a separate volume (`db/archive-wal.sh`: never overwrites, fsync before rename), and a weekly **encrypted base backup** (`backupcrypt.py basebackup`, `pg_basebackup` through the same AES-256-GCM format and key ring as the dumps).
+* Turn it on: `kubectl apply -f k8s/db-pitr.yaml` and `kubectl -n shieldwaf patch statefulset shieldwaf-db --patch-file k8s/db-pitr.patch.yaml` (the database pod restarts once). Docker: `SHIELD_DB_ARCHIVE_DIR=/archive` (and `SHIELD_DB_REPLICATION=on` for the base backup connection).
+* **The archived WAL files are not encrypted** by this tool: they hold all data in clear text. Protect the archive volume like the database volume (encrypted storage, limited access). The base backups are encrypted.
+* Recovery (the data directory must be empty; the steps are the ones run by `tests/db_pitr.sh`):
+  1. stop the firewall and the database (`kubectl -n shieldwaf scale deploy/shieldwaf --replicas=0`, `... scale sts/shieldwaf-db --replicas=0`);
+  2. unpack the newest base backup into a clean data volume and set the target: `python3 /panel/backupcrypt.py pitr-prepare latest --dir /backups/base --pgdata <new data dir> --archive /archive --time "2026-11-04 12:30:00+05:30"`
+     (run it as the database user, with the backup volume, the archive volume (read-only) and the key ring mounted). The backup is authenticated **before** anything is written; a non-empty target directory is refused; `--time` is checked because it ends up in a configuration file;
+  3. start PostgreSQL on that data directory: it replays the archive up to the time and then becomes a normal database; check the data, then start the firewall.
+  Without `--time` it replays everything that was archived.
+* Tested in Docker with a real PostgreSQL (13 checks): archiving, encrypted base backup, an "accident" (rows deleted, garbage added), recovery to just before it, a damaged backup, a wrong key ring, a malformed time. **Not tested in a cluster**: the two manifests and the Kubernetes version of the recovery procedure above.
+* RPO with this feature: seconds to minutes (`archive_timeout`, default 300 s: at most that much of the latest changes can still be missing from the archive). RTO: the time to unpack the base backup plus replay, minutes for a small database.
+
+## Database failover (high availability)
+
+A single PostgreSQL pod is a single point of failure. The panel works with any primary/standby setup: give it a connection string with several hosts, `postgresql://user:pw@pg1:5432,pg2:5432/shieldwaf?target_session_attrs=read-write&sslmode=require` (`SHIELD_DB_URL`), and after a failover it writes to the new primary on its own.
+
+* Tested (`tests/dbfailover.sh`, real PostgreSQL in Docker, TLS, replication over TLS with a SCRAM password via `SHIELD_DB_REPLICATION=on`): the primary is stopped, the standby promoted, the panel's database layer keeps writing; 0 errors, 6 s write gap, no acknowledged write lost.
+* **Not provided:** a failover *manager*. Promotion above is done by hand (`pg_ctl promote`). For automatic promotion, fencing and re-attaching the old primary use a tool built for it (CloudNativePG, Patroni, a cloud database); the multi-host connection string is all the panel needs. We did not build or test such a cluster in Kubernetes.
 
 ## Key rotation
 
@@ -99,4 +121,4 @@ are not changed by `reencrypt`; upload the re-encrypted files again before retir
 
 * Backups made by 2.3 (`.dump.enc`, AES-CBC with the database encryption key) are not read by the 2.4 tool. Take a fresh 2.4 backup right after the upgrade and keep the old files
   until then; they can still be decrypted with `openssl` as described in the 2.3 install guide.
-* Point-in-time recovery and streaming replication (Phase 4 of the 2.4 plan) are not implemented in this release.
+* A failover manager for the database (see "Database failover"): not provided.

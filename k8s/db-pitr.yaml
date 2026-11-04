@@ -1,0 +1,77 @@
+# OPTIONAL: point-in-time recovery for the database (WAL archive + weekly encrypted base backup). RPO becomes minutes instead of a day.
+#   1. kubectl apply -f k8s/db-pitr.yaml                                                    (archive volume, weekly base backup job)
+#   2. kubectl -n shieldwaf patch statefulset shieldwaf-db --patch-file k8s/db-pitr.patch.yaml     (turns archiving on; the database pod restarts once)
+# Recovery procedure and what is and is not protected: docs/DISASTER_RECOVERY.md ("Point-in-time recovery"). The Docker test tests/db_pitr.sh exercises exactly these commands
+# against a real PostgreSQL; this manifest itself has NOT been run in a cluster.
+# The archive volume holds the WAL files in clear text (they contain all data): give it the same protection as the database volume (encrypted storage class, access limited).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shieldwaf-wal-archive
+  namespace: shieldwaf
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shieldwaf-db-basebackup
+  namespace: shieldwaf
+spec:
+  schedule: "0 3 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: shieldwaf-backup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: shieldwaf-backup
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10101
+            runAsGroup: 10101
+            fsGroup: 10101
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: basebackup
+              image: shieldwaf:2.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom: {secretKeyRef: {name: shieldwaf-db, key: POSTGRES_PASSWORD}}
+                - {name: PGHOST, value: shieldwaf-db}
+                - {name: PGUSER, value: shieldwaf}
+                - {name: PGSSLMODE, value: require}
+                - {name: SHIELD_DATA, value: /tmp}
+              command: ["python3", "/panel/backupcrypt.py", "basebackup", "--out", "/backups/base", "--keep-days", "35"]
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: "1", memory: 256Mi}
+              volumeMounts:
+                - {name: backups, mountPath: /backups}
+                - {name: keys, mountPath: /keys, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backups
+              persistentVolumeClaim: {claimName: shieldwaf-backups}
+            - name: keys
+              secret: {secretName: shieldwaf-backup-keys, defaultMode: 0440}
+            - name: tmp
+              emptyDir: {sizeLimit: 128Mi}
