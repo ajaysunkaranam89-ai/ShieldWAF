@@ -10,7 +10,7 @@ USER root
 RUN apk upgrade --no-cache \
  && apk add --no-cache python3 py3-flask py3-gunicorn py3-psycopg2 py3-cryptography py3-redis postgresql16-client \
  && rm -rf /var/cache/apk/* \
- && mkdir -p /data /panel \
+ && mkdir -p /data/rendered /data/logs /panel \
  && chown -R 10101:10101 /data /panel
 
 COPY --chown=10101:10101 panel /panel

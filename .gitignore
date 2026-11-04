@@ -11,3 +11,6 @@ logs/
 
 # test runner output
 tests/.shieldwaf-test.yaml
+
+# Docker Compose secrets
+deploy/.env
