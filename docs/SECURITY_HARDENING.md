@@ -33,16 +33,9 @@ Tested against the real engine in `tests/unit/test_openapi.py` (32 tests). Known
 | Credential rotation | `dbadmin.py rotate` sets a new random password and ends the open sessions of the role |
 | Safe migrations | versioned, transactional (a failed migration leaves nothing behind), serialized across replicas by an advisory lock |
 
-Set-up of the runtime role (run once, with the owner's connection string; the new password is printed once). The commands of `dbadmin.py` are tested against a real PostgreSQL (`tests/db_security.sh`); this `kubectl exec` wrapper around them was **not** run in a cluster:
-
-```sh
-kubectl -n shieldwaf exec deploy/shieldwaf -c panel -- env SHIELD_DB_SSLMODE=require \
-  SHIELD_DB_MIGRATE_URL="$(kubectl -n shieldwaf get secret shieldwaf-db -o jsonpath='{.data.SHIELD_DB_URL}' | base64 -d)" \
-  python3 /panel/dbadmin.py roles --print-password
-```
-
-Then put `postgresql://shieldwaf_app:<password>@shieldwaf-db:5432/shieldwaf` into the secret key `SHIELD_DB_URL`, the owner string into a new key `SHIELD_DB_MIGRATE_URL`, and set `SHIELD_DB_APP_ROLE=shieldwaf_app` on the panel container.
-**This wiring is not automated in the manifests in 2.4** (see `KNOWN_LIMITATIONS.md`): the panel container still holds the owner credential as long as it runs the migrations itself.
+**Kubernetes (new installations):** `scripts/create-db-secret.*` and the chart create the secret with two connection strings. The panel container gets `SHIELD_DB_URL` = role `shieldwaf_app` and `SHIELD_DB_MIGRATE=off` (it waits for the schema and cannot change it). The owner string (`SHIELD_DB_OWNER_URL`) exists only in the init container `migrate`, which runs `dbadmin.py roles`: it creates / hardens the role, applies migrations and grants. Tested in a cluster (hardening 24/24, functional 202/202, high availability 91/91, backup 18/18 on this layout) and in Docker (`tests/db_security.sh`, 35 checks).
+**Existing 2.3 installations** keep their secret (one owner string, the panel migrates itself, as before): nothing breaks, but the panel keeps the owner credential. To switch: add the keys `SHIELD_DB_OWNER_URL` (the old `SHIELD_DB_URL`), `SHIELD_DB_APP_PASSWORD` (a new random password), `SHIELD_DB_MIGRATE=off`, and set `SHIELD_DB_URL` to `postgresql://shieldwaf_app:<that password>@shieldwaf-db:5432/shieldwaf`, then restart the deployment (this switch itself was not tested on an existing installation).
+**Consequence:** the audit **retention** job needs DELETE on the audit trail, which the runtime role does not have: in this mode `audit_retention_days` has no effect and the posture page shows the error. Run retention from the owner connection if you need it (`store.audit_purge`, not scheduled in this mode).
 `python3 /panel/dbadmin.py check` (with the runtime URL) prints what that connection can and cannot do and exits with 1 if something is unsafe.
 Tested: `tests/db_security.sh` (33 checks on a real PostgreSQL: plain connection refused, TLS 1.3, UPDATE/DELETE/TRUNCATE/DROP on the audit trail refused, no CREATE, no pg_authid, rotation, failed-migration rollback).
 

@@ -2,6 +2,7 @@
 # Creates the secret for the optional Redis (cluster-wide rate limiting): a random password and the connection URL the panel reads (SHIELD_REDIS_URL).
 # Usage: sh scripts/create-redis-secret.sh [namespace]      (default namespace: shieldwaf). Safe to run again: an existing secret is never changed.
 set -e
+export MSYS_NO_PATHCONV=1     # Git Bash on Windows would turn a value that starts with "/" into a Windows path
 NS="${1:-shieldwaf}"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 if kubectl -n "$NS" get secret shieldwaf-redis >/dev/null 2>&1; then echo "secret shieldwaf-redis already exists in $NS (left unchanged)"; exit 0; fi

@@ -495,7 +495,25 @@ def _migrate():
     apply_grants(db())
 
 
+def latest_schema_version():
+    return max(v for v, _n, _s in _migrations())
+
+
 def init_db():
+    if os.environ.get("SHIELD_DB_MIGRATE", "on").lower() == "off" and PG:
+        # least-privilege mode: this process has no right to change the schema. An init container (dbadmin.py roles) applies migrations and grants with the owner's
+        # credential; here we only wait until it is done and refuse to run against a schema that is older than this code.
+        for attempt in range(max(1, _int_env("SHIELD_DB_MIGRATE_WAIT_S", 300) // 3)):
+            try:
+                v = current_schema_version()
+                if v >= latest_schema_version():
+                    return
+                print(f"[shieldwaf] waiting for the database migrations (schema {v}, need {latest_schema_version()}) ...", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[shieldwaf] waiting for the database ({type(e).__name__}) ...", flush=True)
+                _local.con = None
+            time.sleep(3)
+        raise RuntimeError("the database schema is not up to date and this process may not change it (SHIELD_DB_MIGRATE=off): run the migration step with the owner credential")
     for attempt in range(40):          # the database pod may still be starting
         try:
             migrate()

@@ -6,7 +6,8 @@
 # Optional second argument: namespace (default shieldwaf). Environment: DEPLOY (deployment name, default shieldwaf), DB_HOST (database service, default shieldwaf-db), YES=1 (no question).
 # What happens: the firewall replicas are stopped (traffic through them stops for the duration; nothing else is touched), the database is
 # REPLACED by the backup (everything saved after the backup is lost), the replicas are started again with the same count as before.
-set -eu
+set -e
+export MSYS_NO_PATHCONV=1     # Git Bash on Windows would turn a value that starts with "/" into a Windows pathu
 WHICH="${1:-}"
 NS="${2:-shieldwaf}"
 DEPLOY="${DEPLOY:-shieldwaf}"

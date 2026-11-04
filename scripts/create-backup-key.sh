@@ -5,6 +5,7 @@
 # IMPORTANT: store an offline copy of the key ring (for example: kubectl -n shieldwaf get secret shieldwaf-backup-keys -o yaml > keys.yaml, kept in a safe place that is not the
 # cluster and not the backup destination). Without the key a backup cannot be read, by anybody.
 set -e
+export MSYS_NO_PATHCONV=1     # Git Bash on Windows would turn a value that starts with "/" into a Windows path
 NS="${1:-shieldwaf}"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 if kubectl -n "$NS" get secret shieldwaf-backup-keys >/dev/null 2>&1; then

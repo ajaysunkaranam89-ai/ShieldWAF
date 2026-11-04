@@ -55,6 +55,29 @@ spec:
         fsGroup: 10101
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: migrate                        # least-privilege mode (secrets made by scripts/create-db-secret.*): creates the role shieldwaf_app and applies migrations and grants
+          image: {{ include "shieldwaf.image" . | quote }}   # with the OWNER credential, which exists only in this container; the panel itself cannot change the schema. Without the
+          imagePullPolicy: {{ .Values.image.pullPolicy }}        # key SHIELD_DB_OWNER_URL (a 2.3 secret) this step does nothing and the panel migrates as before.
+          command: ["sh", "-c", 'if [ -n "$SHIELD_DB_MIGRATE_URL" ]; then exec python3 /panel/dbadmin.py roles --app-role shieldwaf_app; else echo "no owner credential configured: the panel migrates itself"; fi']
+          env:
+            - name: SHIELD_DB_MIGRATE_URL
+              valueFrom: {secretKeyRef: {name: {{ .Values.secret.name }}, key: SHIELD_DB_OWNER_URL, optional: true}}
+            - name: SHIELD_DB_APP_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.secret.name }}, key: SHIELD_DB_APP_PASSWORD, optional: true}}
+            - {name: SHIELD_DB_SSLMODE, value: require}
+            - {name: SHIELD_DATA, value: /tmp}
+            - {name: SHIELD_PRIVATE, value: /tmp/private}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          volumeMounts:
+            - {name: tmp-panel, mountPath: /tmp}
       containers:
         - name: engine
           image: {{ include "shieldwaf.image" . | quote }}
@@ -112,6 +135,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secret.name }}
                   key: SHIELD_DB_URL
+            - name: SHIELD_DB_MIGRATE
+              valueFrom: {secretKeyRef: {name: {{ .Values.secret.name }}, key: SHIELD_DB_MIGRATE, optional: true}}
             - name: SHIELD_DB_SSLMODE
               value: {{ .Values.database.sslMode | quote }}
             - name: SHIELD_DATA_KEY

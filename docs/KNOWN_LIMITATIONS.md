@@ -9,7 +9,7 @@ Status of the 2.4 plan, stated plainly. "Done" means implemented **and** covered
 | A SSRF protection | done | 28 unit tests, functional suite |
 | B OpenAPI validation | done, with gaps below | 32 tests against the real engine |
 | C Container security | done (panel-only secrets volume, read-only engine data, service accounts) | cluster hardening suite 24/24 |
-| D Database security | done in code, image and tests; manifest wiring of the separate runtime role not automated | `tests/db_security.sh` 33/33 |
+| D Database security | done; the restricted runtime role is wired into the manifests and chart for new installations (init container does the migrations) | `tests/db_security.sh` 35/35, cluster suites on that layout |
 | E Backup security | done | 24 unit tests, `tests/backup_crypto.sh` 25/25, cluster backup suite 18/18 |
 | F Audit logging | done, with the limits below | 19 unit tests, real PostgreSQL with concurrent writers |
 | G Cluster-wide rate limiting (Redis) | done in Docker; not run in a cluster | `tests/redis_ratelimit.sh` 20 checks |
@@ -29,7 +29,7 @@ Status of the 2.4 plan, stated plainly. "Done" means implemented **and** covered
 
 ## Limits of what is delivered
 
-* **Database roles in Kubernetes:** `dbadmin.py roles` creates and tests the runtime role, but the manifests and chart still hand the panel the owner connection string. Until the runtime and owner strings are split (see `SECURITY_HARDENING.md`) the panel can still change the audit trail with its own credential. An init container for migrations is the clean fix and is not built.
+* **Database roles in Kubernetes:** new installations run the panel as the restricted role. **Existing 2.3 installations keep the owner credential in the panel** until their secret is changed (steps in `SECURITY_HARDENING.md`; not tested on an existing installation). In restricted mode the audit retention job cannot run (no DELETE right by design).
 * **TLS to the database is encryption only by default** (self-signed certificate, `sslmode=require`: protects against eavesdropping, not a man-in-the-middle). Mount your own certificate and use `verify-full` for that.
 * **Audit trail:** someone who can run code inside the panel holds the audit key and can write a valid chain; deleting the end of the chain is only detected against an earlier signed export. There is no write-once storage for exports.
 * **OpenAPI:** an empty array cannot be told from a missing one (`minItems` is enforced for required arrays only); `oneOf` / `anyOf` / `not` are not enforced.

@@ -8,15 +8,15 @@ Date: 2026-11-04. Branch `release/2.4`. Version 2.4 in the panel, image label an
 |---|---|
 | Unit tests (`tests/unit/run.sh`) | 126 tests OK (SSRF 28, OpenAPI 32 on the real engine, bots 11 on the real engine, audit 19, backup format 24, feeds 6, posture 4, paths 2, others) |
 | `tests/backup_crypto.sh` (real PostgreSQL + S3 server) | 25/25 |
-| `tests/db_security.sh` (real PostgreSQL with TLS) | 33/33 |
+| `tests/db_security.sh` (real PostgreSQL with TLS, restricted role, wait-only startup) | 35/35 |
 | `tests/db_pitr.sh` (real PostgreSQL, point-in-time recovery) | 13/13 |
 | `tests/dbfailover.sh` (primary stopped, standby promoted) | 6/6 |
 | `tests/redis_ratelimit.sh` (real Redis + real nginx) | 14/14 + 6/6 (re-run after the keep-alive change to the limiter) |
 | `tests/crowdsec.sh` (real CrowdSec Local API) | 15/15 |
-| Cluster, `SUITES=hardening` | 24/24 |
-| Cluster, `SUITES=functional` (2 replicas) | **202/202** (final run) |
-| Cluster, `SUITES=ha` (3 replicas) | **91/91** (the layout check reads live replicas only; the shared-session-key check was fixed after this run and not re-run) |
-| Cluster, `SUITES=backup` | 18/18 |
+| Cluster, `SUITES=hardening` | 24/24 (also on the restricted-role layout) |
+| Cluster, `SUITES=functional` (2 replicas) | **202/202**, also on the restricted-role layout (final) |
+| Cluster, `SUITES=ha` (3 replicas) | **91/91** on the restricted-role layout (final) |
+| Cluster, `SUITES=backup` | 18/18 (restricted-role layout, after fixing a Windows-only secret-script flake) |
 | Docker Compose deployment | started: database healthy, panel health check answers, engine serves its health URL. Not run through a protection test |
 
 The cluster suites ran on the images built before the last small engine change (keep-alive upstream for the rate-limit limiter, used only by sites with a cluster-wide limit). That change is covered by the Docker test above, not by a cluster run.
@@ -45,7 +45,7 @@ What this says:
 Closed from the baseline audit: SSRF bypasses, mutable audit log, same-key CBC backups, unencrypted database traffic in code and image, OpenAPI gaps, no unit tests in CI, panel secrets visible to the engine container, no cluster-wide rate limit, no point-in-time recovery. Evidence and details: `SECURITY_HARDENING.md`.
 
 Residual risks that matter most:
-1. The stock manifests still give the panel container the database **owner** credential (the restricted runtime role exists and is tested but is not wired in): a compromise of the panel can still rewrite the audit trail.
+1. New installations run the panel as the restricted database role (tested in the cluster); **existing 2.3 installations keep the owner credential in the panel until their secret is switched** (steps documented, not tested on an existing installation). In restricted mode the audit retention job cannot run.
 2. No failover manager for the database; the WAL archive for point-in-time recovery is not encrypted.
 3. The bot score is a hint; a real browser under automation passes it.
 4. Database TLS is encryption without server authentication unless you mount your own certificate and use `verify-full`.
@@ -53,7 +53,7 @@ Residual risks that matter most:
 
 ## Production readiness
 
-**Better than 2.3 on every item above, but not recommended for production yet.** Before production: (a) wire the runtime database role (or accept risk 1 knowingly); (b) test the 2.3 → 2.4 upgrade and the rollback on a copy: neither was tested; (c) re-run the cluster suites on the final images and measure performance on an idle machine; (d) have the penetration-test plan (`PENETRATION_TESTING.md`) carried out; (e) decide on the optional features (Redis, CrowdSec, WAL archive). It is suitable for a test cluster.
+**Better than 2.3 on every item above, but not recommended for production yet.** Before production: (a) switch an existing installation's secret to the restricted role (or accept risk 1 knowingly); (b) test the 2.3 → 2.4 upgrade and the rollback on a copy: neither was tested; (c) re-run the cluster suites on the final images and measure performance on an idle machine; (d) have the penetration-test plan (`PENETRATION_TESTING.md`) carried out; (e) decide on the optional features (Redis, CrowdSec, WAL archive). It is suitable for a test cluster.
 
 ## Not done
 
