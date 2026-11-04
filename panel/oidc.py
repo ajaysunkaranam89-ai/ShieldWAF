@@ -28,7 +28,7 @@ import netguard
 import sharedfs
 import store
 
-SECRET_FILE = os.path.join(store.DATA, "secrets", "oidc.json")
+SECRET_FILE = os.path.join(store.PRIVATE, "secrets", "oidc.json")
 SECRET_UNIT = "secrets/oidc.json"  # nosec B105 - a file name, not a password
 PENDING_TTL = 600
 LEEWAY = 60

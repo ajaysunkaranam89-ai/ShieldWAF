@@ -11,6 +11,9 @@ import threading
 import time
 
 DATA = os.environ.get("SHIELD_DATA", "/data")
+# Panel-only secrets (session key, setup code, alert and ACME/OIDC secrets) live here. In Kubernetes this is a volume that only the PANEL container mounts, so the
+# engine container (which parses untrusted traffic) cannot read them. Unset = the same folder as DATA, as in 2.3.
+PRIVATE = os.environ.get("SHIELD_PRIVATE", "") or DATA
 CFG_PATH = os.path.join(DATA, "config.json")
 DB_PATH = os.path.join(DATA, "shield.db")
 NODE = os.environ.get("SHIELD_NODE") or os.environ.get("HOSTNAME") or "local"     # this replica (the pod name in Kubernetes)

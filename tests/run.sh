@@ -49,6 +49,12 @@ if [ "${SUITES:-all}" = "backup" ]; then
   "$PY" -u "$HERE/backup_test.py"
   exit $?
 fi
+if [ "${SUITES:-all}" = "hardening" ]; then
+  echo "== deploying a test copy of A Shield WAF (hardening checks only)"
+  deploy_waf
+  "$PY" -u "$HERE/hardening_test.py"
+  exit $?
+fi
 if [ "${SUITES:-all}" = "ha" ]; then
   echo "== deploying a test copy of A Shield WAF (high-availability suite only)"
   deploy_waf

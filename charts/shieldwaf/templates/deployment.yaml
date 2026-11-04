@@ -24,6 +24,7 @@ spec:
       annotations: {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      serviceAccountName: shieldwaf-app         # its own account with no permissions and no token
       automountServiceAccountToken: false      # the WAF never talks to the Kubernetes API
       terminationGracePeriodSeconds: 45
       {{- with .Values.imagePullSecrets }}
@@ -84,8 +85,15 @@ spec:
             periodSeconds: 20
           resources: {{- toYaml .Values.resources.engine | nindent 12 }}
           volumeMounts:
-            - name: data
+            - name: data                       # the engine only READS what the panel prepares ...
               mountPath: /data
+              readOnly: true
+            - name: data                       # ... and writes only its own status files and logs
+              mountPath: /data/rendered
+              subPath: rendered
+            - name: data
+              mountPath: /data/logs
+              subPath: logs
             - name: tmp-engine
               mountPath: /tmp
             {{- if .Values.certs.secrets }}
@@ -111,6 +119,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secret.name }}
                   key: SHIELD_DATA_KEY
+            - name: SHIELD_PRIVATE
+              value: /private
             - name: SHIELD_NODE
               valueFrom:
                 fieldRef:
@@ -140,6 +150,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: private                    # panel-only secrets: NOT mounted in the engine container
+              mountPath: /private
             - name: tmp-panel
               mountPath: /tmp
             {{- if .Values.certs.secrets }}
@@ -156,6 +168,10 @@ spec:
         - name: data
           emptyDir:
             sizeLimit: {{ .Values.dataVolumeSizeLimit }}
+        - name: private
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
         - name: tmp-engine
           emptyDir:
             sizeLimit: 256Mi

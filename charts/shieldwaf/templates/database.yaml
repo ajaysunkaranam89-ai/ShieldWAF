@@ -16,6 +16,7 @@ spec:
       labels:
         app: shieldwaf-db
     spec:
+      serviceAccountName: shieldwaf-db
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}

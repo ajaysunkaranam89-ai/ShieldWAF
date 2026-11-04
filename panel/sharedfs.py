@@ -45,8 +45,12 @@ def valid(rel):
     return bool(_FILES.match(rel) or _TREES.match(rel))
 
 
+_PANEL_ONLY = re.compile(r"^(secret\.key|bootstrap\.code|secrets/)")
+
+
 def _abs(rel):
-    return os.path.join(DATA, *rel.split("/"))
+    """Local place of a shared file. Panel-only secrets go to store.PRIVATE (not visible to the engine container); everything the engine reads stays under /data."""
+    return os.path.join(store.PRIVATE if _PANEL_ONLY.match(rel) else DATA, *rel.split("/"))
 
 
 def _is_tree(rel):

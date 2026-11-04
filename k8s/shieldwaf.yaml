@@ -1,4 +1,4 @@
-# A Shield WAF 2.3 on Kubernetes, highly available: several identical replicas (pods), each = engine (nginx + ModSecurity + OWASP CRS) +
+# A Shield WAF 2.4 on Kubernetes, highly available: several identical replicas (pods), each = engine (nginx + ModSecurity + OWASP CRS) +
 # panel (HTTPS GUI), sharing only a small private scratch volume. All replicas use one PostgreSQL database: configuration, sessions, logs
 # and the (encrypted) shared files live there, so any replica can fail, restart or be replaced without losing anything.
 # Build and load the images first (see docs/INSTALL.md): docker build -t shieldwaf:2.4 . ; docker build -t shieldwaf-db:2.4 db ;
@@ -20,6 +20,28 @@ metadata:
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/warn: restricted
 ---
+# One service account per component, none with permissions or a token: a compromised pod cannot talk to the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shieldwaf-app
+  namespace: shieldwaf
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shieldwaf-db
+  namespace: shieldwaf
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shieldwaf-backup
+  namespace: shieldwaf
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,11 +62,18 @@ spec:
       labels:
         app: shieldwaf
     spec:
+      serviceAccountName: shieldwaf-app        # its own account with no permissions and no token
       automountServiceAccountToken: false      # the WAF never talks to the Kubernetes API
       terminationGracePeriodSeconds: 45
       topologySpreadConstraints:               # spread the replicas over different nodes when there are several (never blocks scheduling)
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: shieldwaf
+        - maxSkew: 1                           # and over availability zones, where the cluster has them
+          topologyKey: topology.kubernetes.io/zone
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
@@ -58,7 +87,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: engine
-          image: shieldwaf:2.3
+          image: shieldwaf:2.4
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/engine-entrypoint.sh"]
           lifecycle:
@@ -92,15 +121,22 @@ spec:
               cpu: "2"
               memory: 1Gi
           volumeMounts:
-            - name: data
+            - name: data                       # the engine only READS what the panel prepares (rules, certificates, feeds) ...
               mountPath: /data
+              readOnly: true
+            - name: data                       # ... and writes only its own status files and logs
+              mountPath: /data/rendered
+              subPath: rendered
+            - name: data
+              mountPath: /data/logs
+              subPath: logs
             - name: tmp-engine
               mountPath: /tmp
             # - name: certs                      # optional: cert-manager secrets, one folder per certificate (see docs/CLOUD.md)
             #   mountPath: /certs
             #   readOnly: true
         - name: panel
-          image: shieldwaf:2.3
+          image: shieldwaf:2.4
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9000
@@ -117,6 +153,8 @@ spec:
                 secretKeyRef:
                   name: shieldwaf-db
                   key: SHIELD_DATA_KEY
+            - name: SHIELD_PRIVATE
+              value: /private
             - name: SHIELD_NODE             # this replica's name, shown on the Cluster page
               valueFrom:
                 fieldRef:
@@ -149,6 +187,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: private                    # panel-only secrets (session key, setup code, alert / ACME / OIDC secrets): NOT mounted in the engine container
+              mountPath: /private
             - name: tmp-panel
               mountPath: /tmp
             # - name: certs
@@ -161,6 +201,10 @@ spec:
         - name: data                           # private to this replica (rendered configuration, logs, local copies of shared files); rebuilt from the database
           emptyDir:
             sizeLimit: 2Gi
+        - name: private                        # panel-only (see the volumeMounts of the panel container); rebuilt from the encrypted copy in the database
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
         - name: tmp-engine
           emptyDir:
             sizeLimit: 256Mi
@@ -277,6 +321,7 @@ spec:
       labels:
         app: shieldwaf-db
     spec:
+      serviceAccountName: shieldwaf-db
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true

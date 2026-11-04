@@ -23,7 +23,7 @@ import netguard
 import sharedfs
 import store
 
-SECRET_DIR = os.path.join(store.DATA, "secrets")
+SECRET_DIR = os.path.join(store.PRIVATE, "secrets")
 SEVERITY = {"info": 0, "warning": 1, "critical": 2}
 EVENTS = {   # key: (label, default severity)
     "engine_down": ("The firewall engine stopped answering", "critical"),
