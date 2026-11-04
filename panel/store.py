@@ -86,7 +86,12 @@ DEFAULT_SETTINGS = {
               "sources": [
                   {"name": "Spamhaus DROP (hijacked networks)", "url": "https://www.spamhaus.org/drop/drop.txt", "on": True},
                   {"name": "FireHOL level 1 (attackers, botnets)", "url": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset", "on": True},
+                  {"name": "abuse.ch Feodo Tracker (botnet command servers)", "url": "https://feodotracker.abuse.ch/downloads/ipblocklist.txt", "on": False},
+                  {"name": "blocklist.de (reported attackers, last 48 h)", "url": "https://lists.blocklist.de/lists/all.txt", "on": False},
+                  {"name": "Emerging Threats compromised hosts", "url": "https://rules.emergingthreats.net/blockrules/compromised-ips.txt", "on": False},
               ]},
+    # CrowdSec bouncer: pulls the ban decisions of a CrowdSec Local API (crowdsec.py); the key lives in the panel-only secrets folder, never here
+    "crowdsec": {"enabled": False, "url": "", "last_count": 0, "last_error": ""},
     # alerting + SIEM export (channels are managed in the GUI; secrets live in /data/secrets, never here)
     "alerts": {"channels": [], "cooldown_s": 300, "spike": {"enabled": True, "blocked_per_min": 100},
                "events": {"engine_down": True, "engine_recovered": True, "config_failed": True, "under_attack": True, "attack_spike": True,

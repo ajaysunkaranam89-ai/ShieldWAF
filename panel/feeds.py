@@ -6,6 +6,7 @@
 * Country data comes from the five regional internet registries (RIPE, ARIN, APNIC, LACNIC, AFRINIC): free public allocation files,
   no account or licence key. It gives the registered country of an address block (not the physical location of a user).
 Downloads use HTTPS with certificate verification, a size cap and a timeout; a failed refresh keeps the previous data."""
+import hashlib
 import ipaddress
 import os
 import socket
@@ -89,21 +90,54 @@ def _acceptable(net):
     return net.prefixlen >= (8 if net.version == 4 else 19)
 
 
-def refresh_feeds(cfg, never_nets):
-    """Download all enabled sources. Returns (ok, count, error). On error the old list stays in place."""
+STALE_COPY_S = 7 * 86400
+
+
+def _cache_path(url):
+    return os.path.join(FEED_DIR, "src-" + hashlib.sha1(url.encode()).hexdigest()[:12] + ".txt")      # nosec B324 - a file name, not security
+
+
+def refresh_feeds(cfg, never_nets, extra=()):
+    """Download all enabled sources. Returns (ok, count, error). A source that fails is replaced by its last good copy (up to 7 days old), so one feed being down does
+    not remove its entries from the list; on error of ALL sources the old list stays in place. `extra`: more networks to list (the CrowdSec decisions)."""
     nets, errors = [], []
+    os.makedirs(FEED_DIR, exist_ok=True)
     for src in cfg["settings"]["feeds"]["sources"]:
         if not src.get("on"):
             continue
+        cache = _cache_path(src["url"])
+        got = []
         try:
             for line in _fetch_lines(src["url"], MAX_FEED_BYTES):
                 n = _parse_feed_line(line)
                 if n is not None and _acceptable(n):
-                    nets.append(n)
+                    got.append(n)
+            with open(cache + ".tmp", "w") as f:
+                f.write("".join(f"{n}" + chr(10) for n in got))
+            os.replace(cache + ".tmp", cache)
+            nets += got
         except Exception as e:  # noqa: BLE001
-            errors.append(f"{src['name']}: {e}")
-    if errors and not nets:
+            if os.path.exists(cache) and time.time() - os.path.getmtime(cache) < STALE_COPY_S:
+                with open(cache) as f:
+                    nets += [n for n in (_parse_feed_line(l) for l in f) if n is not None]
+                errors.append(f"{src['name']}: {e} (the copy from {time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(cache)))} stays in use)")
+            else:
+                errors.append(f"{src['name']}: {e}")
+    if errors and not nets and not extra:
         return False, 0, "; ".join(errors)[:300]
+    with open(os.path.join(FEED_DIR, "base.txt.tmp"), "w") as f:
+        f.write("".join(f"{n}" + chr(10) for n in nets))
+    os.replace(os.path.join(FEED_DIR, "base.txt.tmp"), os.path.join(FEED_DIR, "base.txt"))
+    return True, rebuild(never_nets, extra), "; ".join(errors)[:300]
+
+
+def rebuild(never_nets, extra=()):
+    """Write the list the engine reads: the downloaded feeds (base.txt) plus `extra` (CrowdSec), merged, without the protected networks. Returns the count."""
+    nets = list(extra)
+    p = os.path.join(FEED_DIR, "base.txt")
+    if os.path.exists(p):
+        with open(p) as f:
+            nets += [n for n in (_parse_feed_line(l) for l in f) if n is not None]
     v4 = [n for n in nets if n.version == 4]
     v6 = [n for n in nets if n.version == 6]
     merged = list(ipaddress.collapse_addresses(v4)) + list(ipaddress.collapse_addresses(v6))
@@ -111,10 +145,19 @@ def refresh_feeds(cfg, never_nets):
     os.makedirs(FEED_DIR, exist_ok=True)
     tmp = os.path.join(FEED_DIR, ".feed.tmp")
     with open(tmp, "w") as f:
-        f.write("".join(f"  {n} 1;\n" for n in merged))
+        f.write("".join(f"  {n} 1;" + chr(10) for n in merged))
     os.replace(tmp, os.path.join(FEED_DIR, "feed.geo"))
     sharedfs.publish("feeds/feed.geo")          # the other replicas pick it up
-    return True, len(merged), "; ".join(errors)[:300]
+    return len(merged)
+
+
+def feed_sha():
+    """Hash of the list the engine reads (to find out whether a refresh changed anything)."""
+    p = os.path.join(FEED_DIR, "feed.geo")
+    if not os.path.exists(p):
+        return ""
+    with open(p, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def feed_file():

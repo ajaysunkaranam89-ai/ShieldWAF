@@ -29,6 +29,7 @@ import netguard
 import oidc
 import openapi
 import pages
+import crowdsec
 import ratelimit
 import security
 import sharedfs
@@ -993,6 +994,23 @@ def intel():
             elif act == "refresh":
                 threading.Thread(target=background.run_feed_refresh, daemon=True).start()
                 flash("Refresh started; reload this page in a few seconds.", "ok")
+            elif act == "crowdsec":
+                cs = cfg["settings"]["crowdsec"]
+                url = request.form.get("cs_url", "").strip()
+                err = netguard.check_url(url, ("http", "https"), cfg["settings"].get("upstream_private_allow") or netguard.DEFAULT_PRIVATE_ALLOW, allow_unresolved=True) if url else None
+                if err:
+                    flash("CrowdSec address: " + err, "err")
+                    return redirect(url_for("intel"))
+                cs["url"], cs["enabled"] = url, bool(request.form.get("cs_enabled")) and bool(url)
+                key = request.form.get("cs_key", "").strip()
+                if key:
+                    crowdsec.set_key(key)
+                if cs["enabled"] and not crowdsec.get_key():
+                    cs["enabled"] = False
+                    flash("Enter the bouncer key first (cscli bouncers add shieldwaf).", "err")
+                else:
+                    flash("CrowdSec settings saved." + (" Decisions are pulled every 30 seconds." if cs["enabled"] else ""), "ok")
+                apply_cfg(cfg, "crowdsec settings saved")
             elif act == "geo":
                 flash("Country data download started (about a minute)." if feeds.refresh_geo_async(background.geo_done) else "A download is already running.", "ok")
             return redirect(url_for("intel"))
@@ -1000,7 +1018,8 @@ def intel():
         look = None
         if ip:
             look = {"ip": ip, "feed": feeds.is_listed(ip), "country": feeds.country_of(ip)}
-        return render_template("intel.html", f=f, geo=feeds.geo_status(), look=look, now=time.time())
+        return render_template("intel.html", f=f, geo=feeds.geo_status(), look=look, now=time.time(), cs=cfg["settings"]["crowdsec"], cs_key=bool(crowdsec.get_key()),
+                               cs_last=float(store.meta_get("crowdsec_last_ok", 0) or 0))
 
 
 # --- logs / bans -------------------------------------------------------------------------------
