@@ -332,7 +332,7 @@ took = time.time() - t0
 txt = re.sub(r"<[^>]+>", " ", html)
 check("importing 79 sites is applied on all 3 replicas", "config imported" in txt and "3/3 replicas" in txt, txt[200:400])
 check("...in under 20 seconds (it took %.1f s)" % took, took < 20, f"{took:.1f}s")
-stats = json.loads(psql("select info from nodes order by name limit 1") or "{}")
+stats = json.loads(psql("select info from nodes where ts > extract(epoch from now())-30 order by name limit 1") or "{}")     # live replicas only: rows of replicas that were replaced earlier in the run stay in the table for a while
 check("replicas report the shared rule-set layout with one dedicated site", stats.get("layout") == "shared" and stats.get("dedicated") == 1, str(stats))
 check("nginx -t takes under 3 s with 79 sites (%s ms)" % stats.get("test_ms"), int(stats.get("test_ms", 99999)) < 3000, str(stats))
 for t in tl:

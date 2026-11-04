@@ -11,7 +11,7 @@ Date of this report: 2026-11-04. Branch `release/2.4` (local; **nothing pushed, 
 | `tests/db_security.sh` (real PostgreSQL 16 with TLS) | 33/33 |
 | Cluster backup suite (`SUITES=backup`, kind test namespace) | 18/18 |
 | Cluster functional suite (`SUITES=functional`, 2 replicas, 2.4-dev images) | 199/200 on the first run; the one failure was a test that read page 1 of the now-paginated audit page. The test was changed to filter by action; the database showed the expected records exist (10 `login-failed` with 127.0.0.1, 1 `2fa enabled`, 77 newer records). **That test was not re-run after the change.** The earlier "country data" failure did not occur in this run; its cause is still unknown |
-| High-availability suite (`SUITES=ha`) | started after this report was written; see the end of this file if it was filled in |
+| High-availability suite (`SUITES=ha`, 3 replicas, 2.4-dev images) | 90/91. The one failure read the stats of a stale row of an already replaced replica (the nodes table keeps old rows for a while); the live replicas show 85 sites and 1 dedicated site. The test now only reads live replicas; **not re-run** |
 
 Not run: ACME (Pebble), SSO (Dex) and DB-failover Docker tests against 2.4; Helm install in a cluster; any performance or penetration test.
 
