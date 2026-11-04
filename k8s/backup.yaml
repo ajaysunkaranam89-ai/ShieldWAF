@@ -71,6 +71,8 @@ spec:
                   value: "14"
                 - name: SHIELD_DATA
                   value: /tmp
+                - name: PGSSLMODE
+                  value: require
                 - name: BACKUP_S3_ENDPOINT
                   valueFrom: {secretKeyRef: {name: shieldwaf-backup-s3, key: endpoint, optional: true}}
                 - name: BACKUP_S3_BUCKET
@@ -144,6 +146,7 @@ spec:
                 - {name: PGUSER, value: shieldwaf}
                 - {name: PGDATABASE, value: shieldwaf}
                 - {name: SHIELD_DATA, value: /tmp}
+                - {name: PGSSLMODE, value: require}
               command: ["python3", "/panel/backupcrypt.py", "verify", "latest", "--restore-test", "--dir", "/backups"]
               resources:
                 requests: {cpu: 20m, memory: 64Mi}

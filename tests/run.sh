@@ -3,9 +3,9 @@
 # A Shield WAF in the namespace "shieldwaf-test".
 # It does not touch your real installation in the namespace "shieldwaf".
 #
-# Needs: kubectl (pointing at a test cluster), python 3.9+, curl, openssl, sed. The images shieldwaf:2.3 and shieldwaf-db:16 must already
+# Needs: kubectl (pointing at a test cluster), python 3.9+, curl, openssl, sed. The images shieldwaf:<IMG_TAG> and shieldwaf-db:<IMG_TAG> must already
 # be on the cluster (see docs/INSTALL.md). The pods need outbound internet (GitHub, threat feeds, the registries' country files).
-# IMG_TAG=2.4-dev tests the image shieldwaf:2.4-dev (default 2.3).
+# IMG_TAG=2.4-dev tests the image shieldwaf:2.4-dev (default 2.4-dev).
 # DEPLOY_WITH=helm installs the test copy from charts/shieldwaf instead of k8s/shieldwaf.yaml (needs helm).
 # SUITES=functional runs only the functional suite, SUITES=ha only the high-availability suite, SUITES=backup only the backup and restore test (default: both). The high-availability suite also needs
 # docker (it fetches the test CA of Pebble) and internet access to pull ghcr.io/letsencrypt/pebble images.
@@ -23,9 +23,9 @@ deploy_waf() {
   if [ "${DEPLOY_WITH:-manifest}" = "helm" ]; then
     # the same suites against a copy installed from the Helm chart (local images, deployment renamed like the manifest copy)
     kubectl create namespace shieldwaf-test >/dev/null
-    helm install shieldwaf "$ROOT/charts/shieldwaf" -n shieldwaf-test --set image.repository=shieldwaf --set image.tag="${IMG_TAG:-2.3}"       --set database.image.repository=shieldwaf-db --set database.image.tag=16 --set deployment.name=shieldwaf-test >/dev/null
+    helm install shieldwaf "$ROOT/charts/shieldwaf" -n shieldwaf-test --set image.repository=shieldwaf --set image.tag="${IMG_TAG:-2.4-dev}"       --set database.image.repository=shieldwaf-db --set database.image.tag="${IMG_TAG:-2.4-dev}" --set deployment.name=shieldwaf-test >/dev/null
   else
-    sed -e 's#namespace: shieldwaf$#namespace: shieldwaf-test#; s#^  name: shieldwaf$#  name: shieldwaf-test#; s#image: shieldwaf:[0-9.a-z-]*#image: shieldwaf:'"${IMG_TAG:-2.3}"'#' "$ROOT/k8s/shieldwaf.yaml" > "$HERE/.shieldwaf-test.yaml"
+    sed -e 's#namespace: shieldwaf$#namespace: shieldwaf-test#; s#^  name: shieldwaf$#  name: shieldwaf-test#; s#image: shieldwaf:[0-9.a-z-]*#image: shieldwaf:'"${IMG_TAG:-2.4-dev}"'#; s#image: shieldwaf-db:[0-9.a-z-]*#image: shieldwaf-db:'"${IMG_TAG:-2.4-dev}"'#' "$ROOT/k8s/shieldwaf.yaml" > "$HERE/.shieldwaf-test.yaml"
     sh "$ROOT/scripts/create-db-secret.sh" shieldwaf-test >/dev/null
     kubectl apply -f "$HERE/.shieldwaf-test.yaml" >/dev/null
   fi

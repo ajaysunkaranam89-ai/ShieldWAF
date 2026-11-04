@@ -69,10 +69,11 @@ networkPolicy:               # default deny plus the allows the product needs (t
   egressExceptCIDRs: ["169.254.0.0/16", "100.100.100.200/32"]    # never the cloud metadata service
 
 database:
+  sslMode: require          # how the panel connects to the database: require (encrypted) or verify-full (also checks the certificate; needs your CA)
   bundled: true              # false = use your own PostgreSQL (managed service, CloudNativePG ...): see docs/CLOUD.md
   image:
     repository: ghcr.io/ajaysunkaranam89-ai/shieldwaf-db
-    tag: "16"
+    tag: "2.4"
     digest: ""
   storage: 5Gi
   storageClassName: ""

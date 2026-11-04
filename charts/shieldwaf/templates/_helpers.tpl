@@ -4,7 +4,7 @@
 {{- end -}}
 
 {{- define "shieldwaf.dbImage" -}}
-{{- if .Values.database.image.digest -}}{{ .Values.database.image.repository }}@{{ .Values.database.image.digest }}{{- else -}}{{ .Values.database.image.repository }}:{{ .Values.database.image.tag | default "16" }}{{- end -}}
+{{- if .Values.database.image.digest -}}{{ .Values.database.image.repository }}@{{ .Values.database.image.digest }}{{- else -}}{{ .Values.database.image.repository }}:{{ .Values.database.image.tag | default "2.4" }}{{- end -}}
 {{- end -}}
 
 {{- define "shieldwaf.labels" -}}
