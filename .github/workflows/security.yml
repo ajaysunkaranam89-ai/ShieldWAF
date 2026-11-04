@@ -71,3 +71,6 @@ jobs:
       - uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
+          # DL3018: Alpine drops old package versions from its mirrors, so pinning apk versions would break
+          # rebuilds; the image runs "apk upgrade" to pick up security fixes and the base image is pinned by digest.
+          ignore: DL3018
