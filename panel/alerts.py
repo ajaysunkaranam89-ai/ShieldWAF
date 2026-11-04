@@ -34,6 +34,7 @@ EVENTS = {   # key: (label, default severity)
     "auto_ban": ("An address was banned automatically", "info"),
     "upstream_down": ("An upstream of a site went down or came back", "warning"),
     "ssrf_blocked": ("An upstream resolved to a forbidden address (possible SSRF / DNS rebinding)", "critical"),
+    "audit_tamper": ("The audit trail failed its integrity check (a record was changed or removed)", "critical"),
     "login_lockout": ("Admin login locked out after repeated failures", "warning"),
     "admin_change": ("Administrator, role, password or 2FA change", "warning"),
     "cert_expiring": ("A certificate expires soon", "warning"),
@@ -251,3 +252,21 @@ def forward_events(rows):
                     return
     except Exception:  # noqa: BLE001
         pass
+
+
+def _forward_audit(rec):
+    """Every audit record goes to the SIEM channels that asked for forwarding (one JSON event per record, hash included so the SIEM copy can be verified too)."""
+    chans = [c for c in store.load()["settings"]["alerts"]["channels"] if c.get("enabled") and c.get("forward") and c["type"] in ("syslog", "collector")]
+    if not chans:
+        return
+    ev = {"ts": rec["ts"], "event": "audit", "severity": "info", "source": "a-shield-waf", "title": f"{rec['action']} by {rec['username']}",
+          "detail": json.dumps({"seq": rec["seq"], "category": rec["category"], "actor": rec["username"], "action": rec["action"], "detail": rec["detail"][:500],
+                                "source_ip": rec["ip"], "request_id": rec["request_id"], "hash": rec["hash"]}, separators=(",", ":"))}
+    for ch in chans:
+        try:
+            _q.put_nowait((ch, ev))
+        except queue.Full:
+            pass
+
+
+store.audit_hooks.append(_forward_audit)

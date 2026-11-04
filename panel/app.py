@@ -163,6 +163,8 @@ def session_valid():
 
 @app.before_request
 def _guard():
+    rid = request.headers.get("X-Request-ID", "")
+    store.set_request_id(rid if re.fullmatch(r"[A-Za-z0-9_.-]{8,64}", rid) else secrets.token_hex(8))      # correlates audit records and log lines of one request
     ip = client_ip()
     if request.path != "/healthz":
         allow = _nets(store.load()["settings"]["panel_allow_ips"])
@@ -1074,6 +1076,15 @@ def settings():
                 raise ValueError("flood defence values out of range")
             st.update({"autoban": ab, "retention_days": ret, "trusted_proxies": tp, "never_ban": nb, "panel_allow_ips": pa,
                        "upstream_allow": ua, "session_idle_min": idle, "ddos": dd})
+            if "audit_form" in request.form:
+                try:
+                    ad = int(request.form.get("audit_retention_days", "0") or 0)
+                    if not 0 <= ad <= 3650:
+                        raise ValueError
+                except ValueError:
+                    flash("Invalid settings: audit retention must be 0 (keep forever) to 3650 days.", "err")
+                    return redirect(url_for("settings"))
+                st["audit_retention_days"] = ad
             if "ssrf_form" in request.form:            # outbound-address policy (older forms do not send it)
                 try:
                     pv = " ".join(request.form.get("upstream_private_allow", "").split())
@@ -1377,11 +1388,63 @@ def users():
             return redirect(url_for("users"))
         return render_template("users.html", users=cfg["users"], me=me())
 
+AUDIT_PAGE = 50
+
+
 @app.route("/audit")
 def audit_view():
     if role() != "admin":
         abort(403)
-    return render_template("audit.html", rows=store.db().execute("SELECT * FROM audit ORDER BY ts DESC LIMIT 300").fetchall())
+    q, cat, actor = request.args.get("q", "").strip()[:80], request.args.get("cat", ""), request.args.get("actor", "").strip()[:64]
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    where, args = [], []
+    if q:
+        where.append("(action LIKE ? OR detail LIKE ? OR ip LIKE ? OR request_id LIKE ?)")
+        args += [f"%{q}%"] * 4
+    if cat in ("auth", "user", "policy", "certificate", "backup", "security", "admin"):
+        where.append("category=?")
+        args.append(cat)
+    if actor:
+        where.append("username=?")
+        args.append(actor)
+    w = (" WHERE " + " AND ".join(where)) if where else ""
+    con = store.db()
+    total = con.execute("SELECT COUNT(*) c FROM audit" + w, args).fetchone()["c"]                                  # nosec B608 - w is built from fixed text, values are bound
+    rows = con.execute("SELECT * FROM audit" + w + " ORDER BY ts DESC, seq DESC LIMIT ? OFFSET ?", args + [AUDIT_PAGE, (page - 1) * AUDIT_PAGE]).fetchall()  # nosec B608
+    try:
+        ver = json.loads(store.meta_get("audit_verify", "{}") or "{}")
+    except ValueError:
+        ver = {}
+    return render_template("audit.html", rows=rows, q=q, cat=cat, actor=actor, page=page, pages=max(1, -(-total // AUDIT_PAGE)), total=total, ver=ver,
+                           retention=store.load()["settings"].get("audit_retention_days", 0), purge_error=store.meta_get("audit_purge_error", ""))
+
+
+@app.route("/audit/verify", methods=["POST"])
+def audit_verify_now():
+    if role() != "admin":
+        abort(403)
+    res = store.verify_audit()
+    store.meta_set("audit_verify", json.dumps({**res, "at": time.time()}))
+    flash(f"Audit trail verified: {res['records']} records, no change detected." if res["ok"] else f"AUDIT TRAIL BROKEN at record #{res.get('broken_at')}: {res.get('reason')}",
+          "ok" if res["ok"] else "err")
+    return redirect(url_for("audit_view"))
+
+
+@app.route("/audit/export")
+def audit_export_file():
+    """Signed JSON-lines export of the audit chain (one event per line plus a checkpoint line). Admin only; the export itself is audited."""
+    if role() != "admin":
+        abort(403)
+    try:
+        since = max(0, int(request.args.get("since", "0")))
+    except ValueError:
+        since = 0
+    store.audit(me(), "audit exported", f"since record {since}", client_ip(), category="admin")
+    body = "\n".join(store.audit_export(since)) + "\n"
+    return Response(body, mimetype="application/x-ndjson", headers={"Content-Disposition": "attachment; filename=shieldwaf-audit.jsonl"})
 
 
 @app.route("/backup")
