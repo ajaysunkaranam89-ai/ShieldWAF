@@ -85,6 +85,18 @@
 </div>
 
 <div class="card" style="margin-top:14px">
+  <b>Bot protection</b> <span class="hint">&middot; every request gets a score from header behaviour that browsers show and scripts usually do not (no user agent, automation tools, "browser" without Accept-Language, headless browsers ...). Combine with the rate limit and the challenge.</span>
+  <div class="row"><div><label>Mode</label><select name="bot_mode">
+    <option value="off" {{ 'selected' if s.bots.mode=='off' }}>off</option>
+    <option value="detect" {{ 'selected' if s.bots.mode=='detect' }}>detect only (score is logged and sent to the application in X-Shield-Bot-Score)</option>
+    <option value="block" {{ 'selected' if s.bots.mode=='block' }}>block (403)</option>
+    <option value="challenge" {{ 'selected' if s.bots.mode=='challenge' }}>challenge (proof-of-work page; needs the anti-bot challenge above)</option></select></div>
+    <div><label>Score that counts as a bot <small>1-30, 6 = about "no Accept-Language and an automation tool"</small></label><input type="number" name="bot_threshold" min="1" max="30" value="{{ s.bots.threshold }}"></div></div>
+  <label>Paths that are never judged <small>(one per line, e.g. /api/ for machine clients)</small></label><textarea name="bot_exclude">{{ s.bots.exclude_paths }}</textarea>
+  <label>User agents that are never judged <small>(one word per line; a user agent can be faked, so use this only for clients you know)</small></label><textarea name="bot_allow">{{ s.bots.allow_ua }}</textarea>
+</div>
+
+<div class="card" style="margin-top:14px">
   <b>Login gate</b> <span class="hint">&middot; require a user name and password before anyone can reach the site (HTTP basic authentication). Use it over HTTPS.</span>
   <label class="chk"><input type="checkbox" name="auth_enabled" {{ 'checked' if s.auth.enabled }}> Require login</label>
   <div class="row"><div><label>Login prompt text</label><input type="text" name="auth_realm" value="{{ s.auth.realm }}"></div></div>

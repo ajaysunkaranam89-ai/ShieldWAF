@@ -48,12 +48,18 @@ function need(r) {
     var acc = r.headersIn['Accept'] || '';
     if (r.variables.request_method !== 'GET' || acc.indexOf('text/html') < 0) return '0';   // only browser page loads
   }
+  return valid(r) ? '0' : '1';
+}
+
+/* true when the request carries a valid solved-challenge cookie (also used by bots.js, so that a client that solved the challenge is not sent back to it) */
+function valid(r) {
+  if (!key()) return false;
   var ck = getCookie(r, '__shield_ok'), p = ck.split('.');
   if (p.length === 2) {
     var exp = parseInt(p[0], 10);
-    if (exp > Date.now() / 1000 && same(p[1], mac(['ok', ident(r), p[0]]))) return '0';
+    if (exp > Date.now() / 1000 && same(p[1], mac(['ok', ident(r), p[0]]))) return true;
   }
-  return '1';
+  return false;
 }
 
 function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); }
@@ -96,4 +102,4 @@ function verify(r) {
   r.return(204);
 }
 
-export default { need, page, verify };
+export default { need, page, verify, valid };
