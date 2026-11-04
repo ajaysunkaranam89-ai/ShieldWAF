@@ -104,6 +104,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secret.name }}
                   key: SHIELD_DB_URL
+            - name: SHIELD_DB_SSLMODE
+              value: {{ .Values.database.sslMode | quote }}
             - name: SHIELD_DATA_KEY
               valueFrom:
                 secretKeyRef:

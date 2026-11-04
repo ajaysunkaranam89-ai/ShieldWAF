@@ -1,9 +1,11 @@
 """Persistent state for ShieldWAF: the configuration (sites, settings, users, bans), events, access hits, audit trail, sessions.
 PostgreSQL in production; every replica of the panel talks to the same database (see cluster.py for high availability)."""
+import contextlib
 import hashlib
 import hmac
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -217,9 +219,37 @@ def state_version():
 # PostgreSQL in production (SHIELD_DB_URL=postgresql://user:password@host:5432/dbname); SQLite only as a fallback for local tests.
 DB_URL = os.environ.get("SHIELD_DB_URL", "")
 PG = DB_URL.startswith(("postgres://", "postgresql://"))
+# Least privilege (docs/SECURITY_HARDENING.md): SHIELD_DB_URL is the runtime role (no DDL, INSERT/SELECT only on the audit table). Migrations, grants and the audit
+# retention job use SHIELD_DB_MIGRATE_URL (the schema owner). Unset = one role for everything, as in 2.3.
+MIGRATE_URL = os.environ.get("SHIELD_DB_MIGRATE_URL", "") or DB_URL
+APP_ROLE = os.environ.get("SHIELD_DB_APP_ROLE", "")        # when set, the migration step grants exactly the runtime privileges to this role
 if PG:
     import psycopg2
     import psycopg2.extras
+    from psycopg2 import sql as pgsql
+
+
+def _int_env(name, default):
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+def connect_args(owner=False):
+    """Connection settings: TLS mode (SHIELD_DB_SSLMODE, default prefer; require / verify-full in production, with SHIELD_DB_SSLROOTCERT), TCP keepalives, and server-side
+    timeouts so that a stuck query, a lock or an idle transaction cannot hold the database hostage. The owner (migration) connection has no statement timeout."""
+    args = {"connect_timeout": _int_env("SHIELD_DB_CONNECT_TIMEOUT", 10), "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3,
+            "application_name": "shieldwaf-" + ("migrate" if owner else "panel")}
+    mode = os.environ.get("SHIELD_DB_SSLMODE", "")
+    if mode:
+        args["sslmode"] = mode
+    if os.environ.get("SHIELD_DB_SSLROOTCERT"):
+        args["sslrootcert"] = os.environ["SHIELD_DB_SSLROOTCERT"]
+    st = 0 if owner else _int_env("SHIELD_DB_STATEMENT_TIMEOUT_MS", 30000)
+    opts = f"-c statement_timeout={st} -c lock_timeout={_int_env('SHIELD_DB_LOCK_TIMEOUT_MS', 10000) if not owner else 60000} "            f"-c idle_in_transaction_session_timeout={_int_env('SHIELD_DB_IDLE_TX_TIMEOUT_MS', 60000)}"
+    args["options"] = opts
+    return args
 
 HOUR = "CAST(FLOOR(ts/3600) AS INTEGER)" if PG else "CAST(ts/3600 AS INTEGER)"
 
@@ -234,10 +264,11 @@ _local = threading.local()
 class _Conn:
     """The same tiny API for both databases: execute / executemany / commit, '?' placeholders, rows readable by column name."""
 
-    def __init__(self):
+    def __init__(self, url=None, owner=False):
         self._n = 0                        # statements run since the last commit (a dead connection is retried only when this is 0)
+        self._url, self._owner = url or DB_URL, owner
         if PG:
-            self.raw = psycopg2.connect(DB_URL, connect_timeout=10)
+            self.raw = psycopg2.connect(self._url, **connect_args(owner))
         else:
             os.makedirs(DATA, exist_ok=True)
             self.raw = sqlite3.connect(DB_PATH, timeout=30)
@@ -256,7 +287,7 @@ class _Conn:
             self.raw.close()
         except Exception:  # noqa: BLE001
             pass
-        self.raw = psycopg2.connect(DB_URL, connect_timeout=10)
+        self.raw = psycopg2.connect(self._url, **connect_args(self._owner))
 
     def _run(self, fn, write=True):
         """Run one database call. If the connection died (database restarted, failover) and nothing uncommitted would be lost,
@@ -307,6 +338,51 @@ def db():
         con = _Conn()
         _local.con = con
     return con
+
+
+@contextlib.contextmanager
+def as_owner():
+    """Run a block on the schema owner's connection (migrations, grants, audit retention). Without SHIELD_DB_MIGRATE_URL it is the normal connection."""
+    if not PG or MIGRATE_URL == DB_URL:
+        yield
+        return
+    prev = getattr(_local, "con", None)
+    con = _Conn(MIGRATE_URL, owner=True)
+    _local.con = con
+    try:
+        yield
+    finally:
+        try:
+            con.raw.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _local.con = prev
+
+
+def apply_grants(con, role=None):
+    """Give the runtime role exactly what it needs and no more: DML on the tables, USAGE on the sequences, and on the audit trail only SELECT and INSERT, so a
+    stolen runtime credential (or an SQL injection in the panel) cannot rewrite or delete audit records. Idempotent; runs after every migration."""
+    role = role or APP_ROLE
+    if not PG or not role:
+        return False
+    if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", role):
+        raise ValueError("SHIELD_DB_APP_ROLE is not a plain lower-case role name")
+    if not con.execute("SELECT 1 FROM pg_roles WHERE rolname=?", (role,)).fetchone():
+        con.commit()
+        print(f"[shieldwaf] database role {role} does not exist yet: run panel/dbadmin.py roles (grants skipped)", flush=True)
+        return False
+    r = pgsql.Identifier(role)
+    cur = con.raw.cursor()
+    for stmt in (
+        "GRANT CONNECT ON DATABASE {db} TO {r}", "GRANT USAGE ON SCHEMA public TO {r}", "REVOKE CREATE ON SCHEMA public FROM {r}",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {r}",
+        "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit FROM {r}", "GRANT SELECT, INSERT ON TABLE audit TO {r}",
+        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE schema_migrations FROM {r}",
+        "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {r}",
+    ):
+        cur.execute(pgsql.SQL(stmt).format(r=r, db=pgsql.Identifier(con.raw.get_dsn_parameters()["dbname"])))
+    con.raw.commit()
+    return True
 
 
 def _baseline_ddl():
@@ -369,7 +445,12 @@ def current_schema_version():
 
 
 def migrate():
-    """Apply every migration that has not run yet. Safe to call from every replica at the same time."""
+    """Apply every migration that has not run yet, on the schema owner's connection. Safe to call from every replica at the same time."""
+    with as_owner():
+        _migrate()
+
+
+def _migrate():
     con = db()
     if PG:
         con.execute("SELECT pg_advisory_lock(?)", (MIGRATION_LOCK,))
@@ -402,6 +483,7 @@ def migrate():
             except Exception:  # noqa: BLE001
                 pass
     backfill_audit_chain()
+    apply_grants(db())
 
 
 def init_db():
@@ -620,7 +702,7 @@ def audit_purge(before_ts):
     """Retention: remove records older than `before_ts` from the START of the chain and keep an anchor so the rest still verifies. Needs DELETE rights on the
     audit table, which the panel's runtime database role does not have by design (docs/SECURITY_HARDENING.md): it only works with a maintenance connection
     (SHIELD_DB_MAINT_URL) or on SQLite. Returns the number of removed records."""
-    with _audit_lock:
+    with _audit_lock, as_owner():
         con = db()
         row = con.execute("SELECT seq, hash FROM audit WHERE seq IS NOT NULL AND ts<? ORDER BY seq DESC LIMIT 1", (before_ts,)).fetchone()
         con.commit()

@@ -1,8 +1,8 @@
 # A Shield WAF 2.3 on Kubernetes, highly available: several identical replicas (pods), each = engine (nginx + ModSecurity + OWASP CRS) +
 # panel (HTTPS GUI), sharing only a small private scratch volume. All replicas use one PostgreSQL database: configuration, sessions, logs
 # and the (encrypted) shared files live there, so any replica can fail, restart or be replaced without losing anything.
-# Build and load the images first (see docs/INSTALL.md): docker build -t shieldwaf:2.3 . ; docker build -t shieldwaf-db:16 db ;
-# kind load docker-image shieldwaf:2.3 shieldwaf-db:16 --name mycluster
+# Build and load the images first (see docs/INSTALL.md): docker build -t shieldwaf:2.4 . ; docker build -t shieldwaf-db:2.4 db ;
+# kind load docker-image shieldwaf:2.4 shieldwaf-db:2.4 --name mycluster
 # No secrets are stored here. Create the secret first (random database password + key for the shared files, kept only in the cluster):
 #   sh scripts/create-db-secret.sh            (or .\scripts\create-db-secret.ps1 on Windows)
 # The admin account is created in the browser on first start. Change `replicas` below (2 = redundancy, 3 = survives a node loss while
@@ -110,6 +110,8 @@ spec:
                 secretKeyRef:
                   name: shieldwaf-db
                   key: SHIELD_DB_URL
+            - name: SHIELD_DB_SSLMODE       # the database only accepts TLS; require = encrypted (use verify-full with SHIELD_DB_SSLROOTCERT when you mount your own certificate)
+              value: require
             - name: SHIELD_DATA_KEY         # encrypts the files replicas share through the database (certificates, keys, alert secrets)
               valueFrom:
                 secretKeyRef:
@@ -285,7 +287,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: postgres
-          image: shieldwaf-db:16                 # built from db/Dockerfile (official PostgreSQL, pinned, OS fixes, unused gosu removed)
+          image: shieldwaf-db:2.4                # built from db/Dockerfile (official PostgreSQL, pinned, OS fixes, TLS on, plain connections rejected)
           args: ["postgres", "-c", "max_connections=200"]    # each replica keeps about 20 connections
           ports:
             - containerPort: 5432
