@@ -3,6 +3,7 @@
 Read [`../SECURITY.md`](../SECURITY.md) first. This page only covers the cloud-specific steps.
 
 ## 1. Image
+**Easiest:** use the published, signed images and the Helm chart (`docs/RELEASE.md`), pin them by digest, and install with `helm install shieldwaf oci://ghcr.io/<owner>/charts/shieldwaf -n shieldwaf --create-namespace --set service.proxy.type=LoadBalancer --set autoscaling.enabled=true --set backup.enabled=true`. Or build your own as follows.
 Build once, push to **your private registry**, and reference it by digest.
 ```bash
 docker build -t <registry>/a-shield-waf:2.3 .

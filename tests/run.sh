@@ -5,6 +5,7 @@
 #
 # Needs: kubectl (pointing at a test cluster), python 3.9+, curl, openssl, sed. The images shieldwaf:2.3 and shieldwaf-db:16 must already
 # be on the cluster (see docs/INSTALL.md). The pods need outbound internet (GitHub, threat feeds, the registries' country files).
+# DEPLOY_WITH=helm installs the test copy from charts/shieldwaf instead of k8s/shieldwaf.yaml (needs helm).
 # SUITES=functional runs only the functional suite, SUITES=ha only the high-availability suite, SUITES=backup only the backup and restore test (default: both). The high-availability suite also needs
 # docker (it fetches the test CA of Pebble) and internet access to pull ghcr.io/letsencrypt/pebble images.
 # Careful: the namespaces "shieldwaf-test", "sink-test" and "shieldwaf-demo" are deleted and recreated. Nothing else is touched.
@@ -18,9 +19,15 @@ trap cleanup EXIT
 
 deploy_waf() {
   kubectl delete namespace shieldwaf-test --wait=true >/dev/null 2>&1
-  sed -e 's#namespace: shieldwaf$#namespace: shieldwaf-test#; s#^  name: shieldwaf$#  name: shieldwaf-test#' "$ROOT/k8s/shieldwaf.yaml" > "$HERE/.shieldwaf-test.yaml"
-  sh "$ROOT/scripts/create-db-secret.sh" shieldwaf-test >/dev/null
-  kubectl apply -f "$HERE/.shieldwaf-test.yaml" >/dev/null
+  if [ "${DEPLOY_WITH:-manifest}" = "helm" ]; then
+    # the same suites against a copy installed from the Helm chart (local images, deployment renamed like the manifest copy)
+    kubectl create namespace shieldwaf-test >/dev/null
+    helm install shieldwaf "$ROOT/charts/shieldwaf" -n shieldwaf-test --set image.repository=shieldwaf --set image.tag=2.3       --set database.image.repository=shieldwaf-db --set database.image.tag=16 --set deployment.name=shieldwaf-test >/dev/null
+  else
+    sed -e 's#namespace: shieldwaf$#namespace: shieldwaf-test#; s#^  name: shieldwaf$#  name: shieldwaf-test#' "$ROOT/k8s/shieldwaf.yaml" > "$HERE/.shieldwaf-test.yaml"
+    sh "$ROOT/scripts/create-db-secret.sh" shieldwaf-test >/dev/null
+    kubectl apply -f "$HERE/.shieldwaf-test.yaml" >/dev/null
+  fi
   for i in $(seq 1 90); do
     P=$(kubectl -n shieldwaf-test get pods --no-headers 2>/dev/null)
     [ "$(echo "$P" | grep -c '^shieldwaf-test.* 2/2')" -ge 2 ] && echo "$P" | grep -q "shieldwaf-db-0 .*1/1"       && kubectl -n sink-test get pods --no-headers 2>/dev/null | grep -q " 1/1"       && [ "$(kubectl -n shieldwaf-demo get pods --no-headers 2>/dev/null | grep -c ' 1/1')" = "2" ] && break

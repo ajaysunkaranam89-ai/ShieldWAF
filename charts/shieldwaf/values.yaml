@@ -1,0 +1,90 @@
+# A Shield WAF Helm chart: every setting with its default. Override with --set or -f my-values.yaml.
+# No secret belongs in this file: the chart creates the database password and the key for the shared files itself (see `secret`).
+
+image:                       # the firewall engine and the admin panel (one image, two containers)
+  repository: ghcr.io/ajaysunkaranam89-ai/shieldwaf
+  tag: ""                    # empty = the chart's appVersion
+  digest: ""                 # e.g. sha256:... (recommended for production; wins over the tag)
+  pullPolicy: IfNotPresent
+imagePullSecrets: []         # [{name: my-registry-secret}]
+
+deployment:
+  name: shieldwaf            # keep the default unless you know why (the docs and scripts use it)
+
+replicaCount: 2              # replicas (ignored when autoscaling is on): 2 = redundancy, 3 = survives a node loss during an update
+autoscaling:                 # needs the metrics-server in the cluster
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints:   # spread the replicas over nodes when there are several (never blocks scheduling); for zones use topology.kubernetes.io/zone
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+pdb:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  engine:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {cpu: "2", memory: 1Gi}
+  panel:
+    requests: {cpu: 20m, memory: 128Mi}
+    limits: {cpu: "1", memory: 768Mi}
+dataVolumeSizeLimit: 2Gi     # private scratch volume of each replica (rendered configuration, logs); rebuilt from the database
+
+secret:                      # database password + the key that encrypts the files replicas share (certificates, keys, alert secrets)
+  create: true               # generated at install, kept on upgrade, kept after uninstall (without its key old backups cannot be read)
+  name: shieldwaf-db
+  externalDbUrl: ""          # only with database.bundled=false and create=true: postgresql://user:password@host:5432/db?sslmode=require
+                             # (better: create the secret yourself, set create=false, and give it the keys SHIELD_DB_URL and SHIELD_DATA_KEY)
+
+service:
+  proxy:                     # the protected traffic (clients -> firewall -> your apps)
+    type: ClusterIP          # LoadBalancer to expose it; put the cloud load balancer in front of 80/443 only
+    httpPort: 8080
+    httpsPort: 8443
+    annotations: {}
+    externalTrafficPolicy: ""        # Local keeps the real client address behind a cloud load balancer
+    loadBalancerSourceRanges: []
+
+# Optional certificate mounts. cert-manager secrets, one folder per certificate: /certs/<name>/tls.crt + tls.key (site certificate source "mounted secret").
+certs:
+  secrets: []                # [{name: notes-tls, secretName: notes-tls}]
+panelTls:
+  secretName: ""             # your own certificate for the admin panel (keys tls.crt / tls.key) instead of the self-signed one
+
+extraEnv: []                 # extra environment variables for the panel container, e.g. [{name: SHIELD_SHARED_RULES, value: "1"}]
+
+networkPolicy:               # default deny plus the allows the product needs (the cluster's network plugin must enforce NetworkPolicy)
+  enabled: true
+  adminNamespaceLabel: shieldwaf-admin     # namespaces carrying this label = "true" may reach the admin panel (port 9000)
+  proxyFrom: []              # CIDRs allowed to reach the protected ports 8080/8443; empty = anywhere (restrict to your load balancer's range)
+  egressExceptCIDRs: ["169.254.0.0/16", "100.100.100.200/32"]    # never the cloud metadata service
+
+database:
+  bundled: true              # false = use your own PostgreSQL (managed service, CloudNativePG ...): see docs/CLOUD.md
+  image:
+    repository: ghcr.io/ajaysunkaranam89-ai/shieldwaf-db
+    tag: "16"
+    digest: ""
+  storage: 5Gi
+  storageClassName: ""
+  maxConnections: 200        # about 20 per firewall replica
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+
+backup:                      # encrypted nightly backups of the database (see docs/INSTALL.md, "Backup and restore")
+  enabled: false
+  schedule: "30 2 * * *"
+  keepDays: 14
+  storage: 5Gi
+  storageClassName: ""
+  dbHost: ""                 # the database service to dump (default: the bundled one)

@@ -1,0 +1,51 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default deny, then allow only what is needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-default-deny
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-allow
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - {{- if .Values.networkPolicy.proxyFrom }}
+      from:
+        {{- range .Values.networkPolicy.proxyFrom }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      {{- end }}
+      ports:                       # the protected traffic
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8443 }
+    - from:                        # admin panel: only from pods in namespaces labelled {{ .Values.networkPolicy.adminNamespaceLabel }}=true
+        - namespaceSelector:
+            matchLabels:
+              {{ .Values.networkPolicy.adminNamespaceLabel }}: "true"
+      ports:
+        - { protocol: TCP, port: 9000 }
+  egress:
+    - to:                          # DNS
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:                          # the applications behind the firewall, the database, the internet (feeds, certificates); never the cloud metadata service
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{ toJson .Values.networkPolicy.egressExceptCIDRs }}
+{{- end }}

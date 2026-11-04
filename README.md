@@ -32,6 +32,7 @@ password is generated in your cluster and the admin account is created in your b
 | [`docs/INSTALL.md`](docs/INSTALL.md) | step-by-step installation (kind, any Kubernetes, first login) |
 | [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) | every screen and setting, with examples |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | something does not work |
+| [`docs/RELEASE.md`](docs/RELEASE.md), [`charts/shieldwaf`](charts/shieldwaf/README.md) | Helm chart, signed images, SBOM, how to verify what you download |
 | [`docs/CLOUD.md`](docs/CLOUD.md) | running in the cloud (registry, load balancer, cert-manager, managed PostgreSQL) |
 | [`docs/DDOS.md`](docs/DDOS.md) | denial-of-service defence: what it does, what must sit in front |
 | [`SECURITY.md`](SECURITY.md) | security design, honest assessment, limits, how to report a vulnerability |
@@ -64,6 +65,7 @@ password is generated in your cluster and the admin account is created in your b
 | **OpenAPI validation** | upload your OpenAPI 3 document: unknown paths / methods / parameters / JSON fields, missing required fields, wrong types, enums, ranges and lengths are refused (or logged in detect mode) |
 | **High availability** | 2+ replicas, shared sessions, changes applied on every replica (the confirmation says "applied on 3/3 replicas"), one leader for once-only jobs with automatic failover, encrypted file sharing through the database, rolling updates without dropped requests, **Cluster** page ([`docs/INSTALL.md`](docs/INSTALL.md#high-availability)) |
 | **Fast reloads** | one shared OWASP rule set instead of one per site: 80 sites apply in about 6 seconds; `nginx -t` takes about 0.2 s |
+| **Helm chart and signed releases** | `helm install` from `charts/shieldwaf` (replicas, optional **autoscaling**, backups, load balancer, certificate mounts, network policy as values); a release pipeline builds the images, scans them, **signs** them (keyless, cosign), attaches an **SBOM** and publishes the chart as a signed OCI package ([`docs/RELEASE.md`](docs/RELEASE.md)) |
 | **Backups and database failover** | nightly **encrypted** backups (`k8s/backup.yaml`: dump, AES-256, read-back check, 14-day retention) and a one-command **restore** (`scripts/restore-db.sh` / `.ps1`); the panel survives a database primary failure (tested against a real primary and standby: about 7 seconds, no lost writes); a ready manifest for a replicated database with CloudNativePG |
 | **PostgreSQL** | configuration, attack log, sessions and audit trail live in PostgreSQL (in-cluster, hardened) or in your managed PostgreSQL |
 | **Single sign-on** | sign in with your company account through **OpenID Connect** (Microsoft Entra ID, Google, Okta, Keycloak, Authentik, Dex ...): PKCE, signature / issuer / audience / nonce / expiry checks, allowed e-mail domains and addresses, administrator list or groups, read-only by default; the password login stays as the emergency way in |
@@ -183,6 +185,7 @@ page, rate limiting, auto-ban, backup contents and audit trail, the positive sec
 - Rate limits and the per-address connection cap are counted **per replica** (each replica sees only its own share of the traffic), so with N replicas an address can use up to N times the limit. Plan the numbers accordingly.
 - Reload time is now almost independent of the number of sites, except while an OWASP rule-set update is being canary-tested (two rule-set versions cannot be shared): then each site loads its own copy again and reloads are slower; test canaries on few sites.
 - Load balancing is simple: a request is sent to a randomly chosen (weighted) healthy backend. There is no connection reuse tuning, no slow-start and no session replication; health checks are done by one replica (the leader) and take about 20 seconds to react.
+- The release pipeline (`release.yml`: scan, sign, SBOM, publish) was not run in this project's tests because it needs GitHub; the Helm chart was (the full functional and high-availability suites run against a chart-installed copy), but autoscaling needs the metrics-server, which the test cluster does not have, so that option was only rendered and dry-run.
 - Single sign-on is OpenID Connect only (no SAML), and there is no hardware-key (WebAuthn) login yet; two-factor for SSO users is the identity provider's job. The sign-in is tested against Dex, a real OpenID Connect provider, not against the commercial ones.
 - Automatic certificates use the HTTP-01 check, so they need a public host name that reaches the firewall on port 80, and no wildcard names (those need a DNS check, not built in; use cert-manager for wildcards). The ACME client is tested against Pebble, the official test server; it was not run against the real Let's Encrypt here because that needs a public domain.
 Details in `SECURITY.md`.
@@ -202,6 +205,7 @@ report security problems privately as described in [`SECURITY.md`](SECURITY.md).
 | `panel/cluster.py`, `panel/sharedfs.py` | high availability: leader election, change propagation, encrypted shared files |
 | `k8s/backup.yaml`, `scripts/restore-db.*`, `k8s/ha-database/` | encrypted nightly backups, restore, and the replicated-database option |
 | `panel/oidc.py` | single sign-on (OpenID Connect) |
+| `charts/shieldwaf/`, `.github/workflows/release.yml` | Helm chart and the release pipeline (signing, SBOM) |
 | `tests/` | the 200-check regression suite, the 91-check high-availability suite and their runner |
 | `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
 | `k8s/shieldwaf.yaml` | hardened namespace, replicated Deployment, disruption budget, PostgreSQL StatefulSet, services, network policies |

@@ -20,6 +20,13 @@ git clone https://github.com/ajaysunkaranam89-ai/ShieldWAF.git
 cd ShieldWAF
 ```
 
+## Alternative: install with Helm
+If you use Helm, the chart replaces steps 4 and 5 below (and generates the secret itself):
+```bash
+helm install shieldwaf ./charts/shieldwaf -n shieldwaf --create-namespace
+```
+Build and load the images first (steps 2 and 3, tags `shieldwaf:2.3` and `shieldwaf-db:16`) and add `--set image.repository=shieldwaf --set image.tag=2.3 --set database.image.repository=shieldwaf-db`, or install published, signed releases from the registry (`docs/RELEASE.md`). Then continue at step 6.
+
 ## 2. Build the two images
 ```bash
 docker build -t shieldwaf:2.3 .          # the firewall engine and the admin panel

@@ -1,0 +1,137 @@
+# Release pipeline: push a tag like v2.3.0 and this builds the two images, scans them, pushes them to GitHub Container Registry, signs them
+# (keyless, with this workflow's identity: no key to lose), attaches an SBOM (SPDX) to each image and to the GitHub release, and publishes the
+# Helm chart as an OCI package (also signed). See docs/RELEASE.md for how to verify everything you download.
+# NOTE: written for GitHub Actions and not run in the project's own tests (it needs GitHub); the first tag is its first real run.
+name: release
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+permissions:
+  contents: write        # create the GitHub release
+  packages: write        # push images and the chart to ghcr.io
+  id-token: write        # keyless signing (the signature says: built by this workflow, from this tag)
+env:
+  REGISTRY: ghcr.io
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Names and versions
+        id: v
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"                     # registry names must be lower case
+          VERSION="${GITHUB_REF_NAME#v}"                           # 2.3.0
+          MINOR="$(echo "$VERSION" | cut -d. -f1,2)"               # 2.3 (the chart's default image tag)
+          echo "owner=$OWNER" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+          echo "engine=${REGISTRY}/${OWNER}/shieldwaf" >> "$GITHUB_OUTPUT"
+          echo "db=${REGISTRY}/${OWNER}/shieldwaf-db" >> "$GITHUB_OUTPUT"
+          echo "chart=${REGISTRY}/${OWNER}/charts" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@v3
+      - uses: azure/setup-helm@v4
+
+      # ---- build locally first and refuse to publish an image with known fixable HIGH/CRITICAL vulnerabilities
+      - name: Build the images (not pushed yet)
+        run: |
+          docker buildx build --load -t shieldwaf:release .
+          docker buildx build --load -t shieldwaf-db:release db
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.70.0"
+          TRIVY_SHA256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
+        run: |
+          curl -fsSLo trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf trivy.tar.gz -C "$HOME/.local/bin" trivy
+          rm trivy.tar.gz
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Scan the images
+        run: |
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 shieldwaf:release
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 shieldwaf-db:release
+
+      # ---- publish, with build provenance and an SBOM attached by BuildKit
+      - name: Push the engine / panel image
+        id: engine
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ steps.v.outputs.engine }}:${{ steps.v.outputs.version }}
+            ${{ steps.v.outputs.engine }}:${{ steps.v.outputs.minor }}
+            ${{ steps.v.outputs.engine }}:latest
+      - name: Push the database image
+        id: db
+        uses: docker/build-push-action@v6
+        with:
+          context: db
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ steps.v.outputs.db }}:${{ steps.v.outputs.version }}
+            ${{ steps.v.outputs.db }}:16
+            ${{ steps.v.outputs.db }}:latest
+
+      # ---- sign the images by digest, and attach an SPDX SBOM as a signed attestation
+      - name: Sign the images
+        run: |
+          cosign sign --yes "${{ steps.v.outputs.engine }}@${{ steps.engine.outputs.digest }}"
+          cosign sign --yes "${{ steps.v.outputs.db }}@${{ steps.db.outputs.digest }}"
+      - name: Generate SBOMs (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.v.outputs.engine }}@${{ steps.engine.outputs.digest }}
+          format: spdx-json
+          output-file: shieldwaf-${{ steps.v.outputs.version }}.spdx.json
+          upload-artifact: false
+      - name: Generate the database image SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.v.outputs.db }}@${{ steps.db.outputs.digest }}
+          format: spdx-json
+          output-file: shieldwaf-db-${{ steps.v.outputs.version }}.spdx.json
+          upload-artifact: false
+      - name: Attest the SBOMs
+        run: |
+          cosign attest --yes --type spdxjson --predicate "shieldwaf-${{ steps.v.outputs.version }}.spdx.json" "${{ steps.v.outputs.engine }}@${{ steps.engine.outputs.digest }}"
+          cosign attest --yes --type spdxjson --predicate "shieldwaf-db-${{ steps.v.outputs.version }}.spdx.json" "${{ steps.v.outputs.db }}@${{ steps.db.outputs.digest }}"
+
+      # ---- the Helm chart as a signed OCI package
+      - name: Package and push the chart
+        id: chart
+        run: |
+          helm lint charts/shieldwaf
+          helm package charts/shieldwaf --version "${{ steps.v.outputs.version }}" --app-version "${{ steps.v.outputs.minor }}"
+          helm push "shieldwaf-${{ steps.v.outputs.version }}.tgz" "oci://${{ steps.v.outputs.chart }}" 2>&1 | tee push.log
+          echo "digest=$(grep -o 'sha256:[0-9a-f]*' push.log | tail -1)" >> "$GITHUB_OUTPUT"
+      - name: Sign the chart
+        run: cosign sign --yes "${{ steps.v.outputs.chart }}/shieldwaf@${{ steps.chart.outputs.digest }}"
+
+      - name: Checksums
+        run: sha256sum shieldwaf-*.tgz shieldwaf-*.spdx.json shieldwaf-db-*.spdx.json > SHA256SUMS
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            shieldwaf-${{ steps.v.outputs.version }}.tgz
+            shieldwaf-${{ steps.v.outputs.version }}.spdx.json
+            shieldwaf-db-${{ steps.v.outputs.version }}.spdx.json
+            SHA256SUMS
+          body: |
+            Images: `${{ steps.v.outputs.engine }}@${{ steps.engine.outputs.digest }}` and `${{ steps.v.outputs.db }}@${{ steps.db.outputs.digest }}` (signed, with SBOM).
+            Chart: `helm install shieldwaf oci://${{ steps.v.outputs.chart }}/shieldwaf --version ${{ steps.v.outputs.version }} -n shieldwaf --create-namespace`
+            How to verify the signatures: docs/RELEASE.md

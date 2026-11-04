@@ -1,0 +1,126 @@
+{{- if .Values.database.bundled }}
+# PostgreSQL: configuration, sessions, attack log, audit trail and the encrypted shared files. One instance; use a replicated database for redundancy (docs/CLOUD.md).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shieldwaf-db
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  serviceName: shieldwaf-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shieldwaf-db
+  template:
+    metadata:
+      labels:
+        app: shieldwaf-db
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ include "shieldwaf.dbImage" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["postgres", "-c", "max_connections={{ .Values.database.maxConnections }}"]
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: shieldwaf
+            - name: POSTGRES_DB
+              value: shieldwaf
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: POSTGRES_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "shieldwaf", "-d", "shieldwaf"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "shieldwaf", "-d", "shieldwaf"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources: {{- toYaml .Values.database.resources | nindent 12 }}
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: pgrun
+              mountPath: /var/run/postgresql
+            - name: pgtmp
+              mountPath: /tmp
+      volumes:
+        - name: pgrun
+          emptyDir: {}
+        - name: pgtmp
+          emptyDir:
+            sizeLimit: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.database.storageClassName }}
+        storageClassName: {{ .Values.database.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.database.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-db
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  clusterIP: None            # headless: the pod is reached as shieldwaf-db
+  selector:
+    app: shieldwaf-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+{{- if .Values.networkPolicy.enabled }}
+---
+# Only the panel (and the backup pods) may talk to the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-db-allow
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf-db
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: shieldwaf
+        - podSelector:
+            matchLabels:
+              app: shieldwaf-backup
+      ports:
+        - { protocol: TCP, port: 5432 }
+{{- end }}
+{{- end }}

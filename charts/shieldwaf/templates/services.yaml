@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-proxy          # the protected traffic (clients -> firewall -> your apps)
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+  {{- with .Values.service.proxy.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.proxy.type }}
+  {{- if .Values.service.proxy.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.service.proxy.externalTrafficPolicy }}
+  {{- end }}
+  {{- with .Values.service.proxy.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    app: shieldwaf
+  ports:
+    - name: http
+      port: {{ .Values.service.proxy.httpPort }}
+      targetPort: 8080
+    - name: https
+      port: {{ .Values.service.proxy.httpsPort }}
+      targetPort: 8443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-panel          # the admin GUI (HTTPS) and /metrics (token). Keep it ClusterIP: never expose it to the internet.
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: shieldwaf
+  ports:
+    - name: https
+      port: 9000
+      targetPort: 9000

@@ -25,6 +25,7 @@ kubectl delete namespace shieldwaf-test sink-test shieldwaf-demo
 
 `backup_test.py` takes an encrypted backup, damages the database, restores it and checks that the firewall is running again (`SUITES=backup bash tests/run.sh`). `dbfailover.sh` runs the panel's database layer against a real PostgreSQL primary and standby in Docker and fails the primary over (no cluster needed).
 `sso.sh` runs the single sign-on flow against Dex, a real OpenID Connect provider, in Docker: a normal sign-in, roles, refusals, replay and stolen-callback attacks, and forged ID tokens (no cluster needed; 44 checks).
+`DEPLOY_WITH=helm bash tests/run.sh` installs the test copy from `charts/shieldwaf` instead of the plain manifest and runs the same suites against it.
 `acme.sh` runs the certificate client against Pebble in throw-away Docker containers (needs Docker and internet access to pull the images); it does not need a cluster.
 
 ## Notes

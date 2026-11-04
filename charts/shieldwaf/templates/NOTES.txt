@@ -1,0 +1,28 @@
+A Shield WAF {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+1. Wait until the pods are ready (about a minute):
+     kubectl get pods -n {{ .Release.Namespace }}
+
+2. Open the admin panel and create your administrator account (the panel is not exposed; use a tunnel):
+     kubectl port-forward -n {{ .Release.Namespace }} svc/shieldwaf-panel 9000:9000
+     kubectl logs -n {{ .Release.Namespace }} deploy/{{ .Values.deployment.name }} -c panel | grep "Setup code"
+   then open https://localhost:9000 (accept the certificate warning), enter the setup code, choose a strong password and turn on two-factor login.
+
+3. Add a site (Sites, + Add site), then send traffic through the firewall:
+     kubectl port-forward -n {{ .Release.Namespace }} svc/shieldwaf-proxy 8088:{{ .Values.service.proxy.httpPort }}
+{{- if .Values.networkPolicy.enabled }}
+
+To let a namespace (for example your monitoring) reach the admin panel:
+     kubectl label namespace <name> {{ .Values.networkPolicy.adminNamespaceLabel }}=true
+{{- end }}
+{{- if .Values.secret.create }}
+
+The secret "{{ .Values.secret.name }}" (database password and the key for the shared files) is kept when you uninstall. Back it up: without its key backups cannot be read.
+To install again later in the same namespace use:  --set secret.create=false
+{{- end }}
+{{- if not .Values.backup.enabled }}
+
+Tip: turn on encrypted nightly backups with  --set backup.enabled=true
+{{- end }}
+
+Documentation: {{ .Chart.Home }}
