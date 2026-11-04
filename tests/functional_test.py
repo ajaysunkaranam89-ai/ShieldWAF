@@ -581,7 +581,7 @@ for c in chan:
 page = P.req("/alerts")[1]
 check("channel secrets are never shown in the GUI", "SECRET-TOKEN-1" not in page and "s3cr3t" not in page)
 cids = dict(re.findall(r"<b>([\w -]+)</b></td><td>[^<]*</td>.*?name=\"id\" value=\"(c[0-9a-f]+)\"", page, re.S))
-sec_files = subprocess.run(["kubectl", "-n", NS, "exec", "deploy/shieldwaf-test", "-c", "panel", "--", "sh", "-c", "ls -l /data/secrets | head -12"], capture_output=True, text=True).stdout
+sec_files = subprocess.run(["kubectl", "-n", NS, "exec", "deploy/shieldwaf-test", "-c", "panel", "--", "sh", "-c", "ls -l /private/secrets | head -12"], capture_output=True, text=True).stdout
 check("secret files exist with owner-only permissions (0600)", sec_files.count("-rw-------") >= 3, sec_files[:200])
 for name, needle in (("slack-test", "Test message from A Shield WAF"), ("syslog-udp", "ashieldwaf"), ("syslog-cef", "CEF:0|AShieldWAF"), ("siem-http", "Test message"), ("mail-test", "Test message")):
     if name not in cids:
