@@ -4,6 +4,7 @@
 # Usage: sh scripts/create-db-secret.sh [namespace]      (default namespace: shieldwaf)
 # Safe to run again: an existing password is never changed; a missing encryption key (older installation) is added.
 set -e
+export MSYS_NO_PATHCONV=1     # Git Bash on Windows would turn a value that starts with "/" into a Windows path
 NS="${1:-shieldwaf}"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 newkey() { head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n'; }

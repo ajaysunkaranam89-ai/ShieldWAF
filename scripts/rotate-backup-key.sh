@@ -5,6 +5,7 @@
 #   sh scripts/rotate-backup-key.sh [namespace] reencrypt   also re-encrypt all backups on the volume with the current key (a Job; needs the volume free)
 #   sh scripts/rotate-backup-key.sh [namespace] retire ID   remove an old key (only after every backup was re-encrypted, including the copies in the independent destination)
 set -e
+export MSYS_NO_PATHCONV=1     # Git Bash on Windows would turn a value that starts with "/" into a Windows path
 NS="${1:-shieldwaf}"; ACTION="${2:-}"; OLD="${3:-}"
 kubectl -n "$NS" get secret shieldwaf-backup-keys >/dev/null 2>&1 || { echo "no key ring yet: run scripts/create-backup-key.sh first"; exit 1; }
 case "$ACTION" in
