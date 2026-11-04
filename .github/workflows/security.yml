@@ -35,6 +35,8 @@ jobs:
         with:
           skip-setup-trivy: true
           scan-type: config
+          # tests/ holds throwaway fixtures for local test clusters, not shipped manifests
+          skip-dirs: tests
           severity: HIGH,CRITICAL
           exit-code: "1"
   image-scan:
