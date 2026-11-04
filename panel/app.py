@@ -726,7 +726,7 @@ def dashboards():
     def bars(rows, key, val, extra=None, color=P["blue"], fmt=ch.human):
         top = max([r[val] for r in rows] + [1])
         return [{"label": str(r[key])[:60] or "(none)", "value": fmt(r[val]), "pct": max(2, round(100 * r[val] / top)), "color": color,
-                 "extra": (f"{extra(r)}" if extra else "")} for r in rows]
+                 "extra": (f"{extra(r)}" if extra else "")} for r in rows]  # nosec B610 - "extra" is a bars() keyword, not Django QuerySet.extra()
 
     sites_rows = q("SELECT host, COUNT(*) c, SUM(CASE WHEN status IN (403,429) THEN 1 ELSE 0 END) b FROM access WHERE ts>=? GROUP BY host ORDER BY c DESC LIMIT 8", since)
     sites_rows = [{"host": r["host"], "c": r["c"], "b": r["b"] or 0} for r in sites_rows]
