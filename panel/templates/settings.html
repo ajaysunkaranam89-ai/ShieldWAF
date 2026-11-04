@@ -8,7 +8,11 @@
   <div class="row"><div><label>Sign out idle sessions after (minutes)</label><input type="number" name="idle" min="5" max="480" value="{{ st.session_idle_min }}"></div></div></div>
 <div class="card" style="margin-top:14px"><b>Upstream restrictions (cloud safety)</b>
   <p class="hint">Sites may only forward to hosts that end with one of these suffixes, for example <span class="mono">svc.cluster.local</span> or your private domain. Empty = any host except loopback / link-local / cloud-metadata addresses (always refused).</p>
-  <textarea name="upstream_allow" placeholder="svc.cluster.local">{{ st.upstream_allow }}</textarea></div>
+  <textarea name="upstream_allow" placeholder="svc.cluster.local">{{ st.upstream_allow }}</textarea>
+  <input type="hidden" name="ssrf_form" value="1">
+  <label>Private networks an upstream may use <small>(CIDR ranges, space separated; loopback, link-local and cloud-metadata addresses are <b>never</b> allowed. Names ending with one of the suffixes above are also allowed to use private addresses. Narrow this to your pod and service ranges.)</small></label>
+  <input type="text" name="upstream_private_allow" value="{{ st.upstream_private_allow }}" placeholder="10.96.0.0/12 10.244.0.0/16">
+  <label class="chk"><input type="checkbox" name="upstream_pin_dns" {{ 'checked' if st.upstream_pin_dns }}> Pin DNS: connect to the addresses the panel checked instead of letting nginx look names up itself (closes DNS rebinding; the leader re-checks every 15 seconds and a change is applied on all replicas; headless-service pods are balanced by address)</label></div>
 <div class="card" style="margin-top:14px"><b>Flood defence (layer 7)</b>
   <p class="hint">If one site receives more requests per second than the threshold, "under attack" mode switches on for that site automatically (everyone must pass the anti-bot challenge, a rate limit applies) and switches off when traffic calms down. This stops application-layer floods. It cannot stop network-level (volumetric) attacks: those must be filtered by your cloud provider or CDN before they reach the cluster (see docs/DDOS.md).</p>
   <label class="chk"><input type="checkbox" name="dd_auto" {{ 'checked' if st.ddos.auto }}> Enable automatic under-attack mode</label>

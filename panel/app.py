@@ -25,6 +25,7 @@ import cluster
 import crsupdate
 import engine
 import feeds
+import netguard
 import oidc
 import openapi
 import pages
@@ -254,7 +255,7 @@ def validate_site(s, cfg):
         return "Host name looks invalid (example: app.example.com or *.example.com)."
     if not UP_RE.match(s["upstream"]):
         return "Upstream must look like http://service.namespace.svc.cluster.local:80 (no path)."
-    err = security.check_upstream(s["upstream"], cfg["settings"]["upstream_allow"])
+    err = security.check_upstream(s["upstream"], cfg["settings"]["upstream_allow"], cfg["settings"].get("upstream_private_allow"))
     if err:
         return err
     if any(x["host"] == s["host"] and x["id"] != s["id"] for x in cfg["sites"]):
@@ -265,7 +266,7 @@ def validate_site(s, cfg):
     for u in ups:
         if not UP_RE.match(u["url"]):
             return f"Upstream {u['url'][:60]}: must look like http://service.namespace.svc.cluster.local:80 (no path)."
-        err = security.check_upstream(u["url"], cfg["settings"]["upstream_allow"])
+        err = security.check_upstream(u["url"], cfg["settings"]["upstream_allow"], cfg["settings"].get("upstream_private_allow"))
         if err:
             return f"Upstream {u['url'][:60]}: {err}"
         if not (1 <= int(u["weight"]) <= 100):
@@ -1070,6 +1071,14 @@ def settings():
                 raise ValueError("flood defence values out of range")
             st.update({"autoban": ab, "retention_days": ret, "trusted_proxies": tp, "never_ban": nb, "panel_allow_ips": pa,
                        "upstream_allow": ua, "session_idle_min": idle, "ddos": dd})
+            if "ssrf_form" in request.form:            # outbound-address policy (older forms do not send it)
+                try:
+                    pv = " ".join(request.form.get("upstream_private_allow", "").split())
+                    netguard.parse_networks(pv)
+                except ValueError:
+                    flash("Invalid settings: the allowed private networks must be CIDR ranges like 10.96.0.0/12.", "err")
+                    return redirect(url_for("settings"))
+                st["upstream_private_allow"], st["upstream_pin_dns"] = pv, bool(request.form.get("upstream_pin_dns"))
             if "sso_form" in request.form:             # the single sign-on section (older forms do not send it)
                 f = request.form
                 sso = {"enabled": bool(f.get("sso_enabled")), "issuer": f.get("sso_issuer", "").strip().rstrip("/"), "client_id": f.get("sso_client_id", "").strip(),

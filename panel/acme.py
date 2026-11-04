@@ -27,6 +27,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.x509.oid import NameOID
 
+import netguard
 import sharedfs
 import store
 
@@ -50,9 +51,7 @@ def _b64(data):
 
 
 def _public(ip_text):
-    import ipaddress
-    ip = ipaddress.ip_address(ip_text)
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+    return netguard.classify(ip_text) == "public"
 
 
 def check_directory(url):

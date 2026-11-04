@@ -225,15 +225,51 @@ def _modsec_dedicated(site):
 ACME_LOCATION = "location ^~ /.well-known/acme-challenge/ { alias " + os.path.join(DATA, "acme") + "/; default_type text/plain; modsecurity off; }"
 
 
+def _pin_url(url, ip):
+    u = re.match(r"^(https?)://[^/:]+(:\d+)?$", url)
+    if not u:
+        return None
+    host = f"[{ip}]" if ip.version == 6 else str(ip)
+    return f"{u.group(1)}://{host}{u.group(2) or ''}"
+
+
+def _pin_sites(sites, st):
+    """DNS pinning: resolve every upstream now, keep only addresses that pass the network guard, and let nginx connect to those addresses."""
+    import netguard
+    for s in sites:
+        pinned = {}
+        for url in [s["upstream"]] + [u["url"] for u in s.get("upstreams", [])]:
+            m = re.match(r"^https?://([^/:]+)(?::(\d+))?$", url)
+            if not m:
+                continue
+            err, addrs = netguard.check_host(m.group(1), int(m.group(2)) if m.group(2) else None, st.get("upstream_private_allow"))
+            pinned[url] = [t for t in (_pin_url(url, netguard.unwrap(a)) for a in addrs) if t] if not err else []
+        s["_pinned"] = pinned
+
+
 def balancing(site):
     """Upstreams to spread requests over, in order: healthy primaries; backups only when no primary is healthy; everything if all are marked down
-    (better to try than to refuse). Returns [{"url", "weight", "backup"}]."""
-    ups = [{"url": site["upstream"], "weight": 1, "backup": False}] + [dict(u) for u in site.get("upstreams", [])]
-    down = set(site.get("health", {}).get("down", []))
-    for pool in ([u for u in ups if not u["backup"] and u["url"] not in down], [u for u in ups if u["backup"] and u["url"] not in down], ups):
+    (better to try than to refuse). Upstreams the SSRF check refused are never used. With DNS pinning (site["_pinned"]) every upstream is replaced by the
+    addresses the panel validated. Returns [] when nothing may be used. Entries: {"url", "weight", "backup", "_orig"}."""
+    base = [{"url": site["upstream"], "weight": 1, "backup": False}] + [dict(u) for u in site.get("upstreams", [])]
+    bad, down, pinned = set(site.get("ssrf_blocked", [])), set(site.get("health", {}).get("down", [])), site.get("_pinned")
+    ups = []
+    for u in base:
+        if u["url"] in bad:
+            continue
+        urls = [u["url"]] if pinned is None else pinned.get(u["url"], [])
+        for t in urls:
+            ups.append({**u, "url": t, "weight": max(1, int(u["weight"]) // max(1, len(urls))), "_orig": u["url"]})
+    if not ups:
+        return []
+    for pool in ([x for x in ups if not x["backup"] and x["_orig"] not in down], [x for x in ups if x["backup"] and x["_orig"] not in down], ups):
         if pool:
             return pool
     return ups
+
+
+def _proxy_opts(site):
+    return PROXY_OPTS + (["    proxy_ssl_name $host;"] if site.get("_pinned") is not None else [])      # pinned upstream is an address: send the visitor's host name as SNI
 
 
 def _lb_conf(site):
@@ -319,7 +355,10 @@ def _common(site, gen, feed_on, layout="legacy"):
               f"  location = /__shield_maintenance.html {{ internal; root {pdir}; add_header Retry-After 1800 always; add_header Cache-Control no-store always; }}",
               "  location / { return 503; }"]
         return L
-    lb = len(balancing(site)) > 1
+    pool0 = balancing(site)
+    if not pool0:                                  # every upstream was refused (SSRF check): answer 502 instead of connecting anywhere
+        return L + ["  location / { return 502; }"]
+    lb = len(pool0) > 1
     if lb:      # several upstreams: when nginx itself cannot get an answer (refused, timed out), a read request is retried once on the next upstream
         L.append(f"  error_page 502 503 504 = @retry_{sid};")
     elif site["down_page"]:
@@ -333,13 +372,13 @@ def _common(site, gen, feed_on, layout="legacy"):
         realm = re.sub(r'[^A-Za-z0-9 ._-]', "", site["auth"]["realm"])[:60] or "Restricted"
         loc += [f'    auth_basic "{realm}";', f"    auth_basic_user_file {gen}/htpasswd-{sid};"]
     up = f"$up_{sid}" if lb else f'"{balancing(site)[0]["url"]}"'
-    loc += [f"    set $up {up};", "    proxy_pass $up;"] + PROXY_OPTS
+    loc += [f"    set $up {up};", "    proxy_pass $up;"] + _proxy_opts(site)
     if site["rate_limit"]["enabled"]:
         loc += [f"    limit_req zone=rl_{sid} burst={int(site['rate_limit']['burst'])} nodelay;", "    limit_req_status 429;"]
     loc.append("  }")
     if lb:
         retry = [f"  location @retry_{sid} {{", '    if ($request_method !~ "^(GET|HEAD|OPTIONS)$") { return 502; }',      # never replay a write
-                 f"    set $up $upnext_{sid};", "    proxy_pass $up;"] + PROXY_OPTS
+                 f"    set $up $upnext_{sid};", "    proxy_pass $up;"] + _proxy_opts(site)
         # the retry location must not inherit "error_page ... = @retry" (that would loop): it shows the down page, or a plain 502 without one
         retry.append("    error_page 502 503 504 " + ("/__shield_down.html;" if site["down_page"] else "/__shield_gw;"))
         loc += retry + ["  }"]
@@ -404,6 +443,8 @@ def _render(cfg):
         if tp:
             real_ip = "  real_ip_header X-Forwarded-For;\n  real_ip_recursive on;\n" + "".join(f"  set_real_ip_from {c};\n" for c in tp)
         sites = [effective(s) for s in cfg["sites"] if s["enabled"]]
+        if st.get("upstream_pin_dns"):
+            _pin_sites(sites, st)
         crs_active, crs_staged = crsupdate.active_dir(cfg), crsupdate.staged_dir(cfg)
         crs_note = ""
         if not os.path.isdir(crs_active):

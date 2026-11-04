@@ -24,6 +24,7 @@ import urllib.request
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa, utils
 
+import netguard
 import sharedfs
 import store
 
@@ -49,9 +50,7 @@ def _b64e(b):
 
 
 def _public(ip_text):
-    import ipaddress
-    ip = ipaddress.ip_address(ip_text)
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+    return netguard.classify(ip_text) == "public"
 
 
 def check_url(url, what="address"):

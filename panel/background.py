@@ -4,6 +4,7 @@ run only on the leader replica (see cluster.py)."""
 import ipaddress
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -14,6 +15,7 @@ from datetime import datetime
 import acme
 import alerts
 import cluster
+import netguard
 import crsupdate
 import engine
 import feeds
@@ -428,6 +430,57 @@ def upstream_health_tick():
                 alerts.notify("upstream_down", "Upstream health changed", "; ".join(notes), severity="warning", force=True)
 
 
+def ssrf_tick():
+    """Leader, every 15 s: resolve every upstream name again. A name that now points at a forbidden address (loopback, link-local, cloud metadata, a private
+    range that is not allowed ...) is taken out of use at once on every replica; with DNS pinning a changed answer is applied the same way.
+    This closes the gap between 'checked when saved' and 'looked up by nginx for each request' (DNS rebinding) to about the length of this interval."""
+    cfg = store.load()
+    st = cfg["settings"]
+    pin = bool(st.get("upstream_pin_dns"))
+    updates = {}
+    for s in cfg["sites"]:
+        if not s["enabled"]:
+            continue
+        blocked, seen = [], {}
+        for url in [s["upstream"]] + [u["url"] for u in s.get("upstreams", [])]:
+            m = re.match(r"^https?://([^/:]+)(?::(\d+))?$", url)
+            if not m:
+                continue
+            err = security.check_upstream(url, st["upstream_allow"], st.get("upstream_private_allow"), log=False)
+            if err:
+                blocked.append(url)
+            elif pin:
+                try:
+                    seen[url] = sorted(str(a) for a in netguard.resolve(m.group(1)))
+                except OSError:
+                    seen[url] = []
+        if blocked != s.get("ssrf_blocked", []) or (pin and seen != s.get("ssrf_seen", {})) or (not pin and s.get("ssrf_seen")):
+            updates[s["id"]] = (blocked, seen if pin else {})
+    if not updates:
+        return
+    with store._lock:
+        cfg = store.load()
+        notes = []
+        for s in cfg["sites"]:
+            if s["id"] not in updates:
+                continue
+            blocked, seen = updates[s["id"]]
+            for u in set(blocked) - set(s.get("ssrf_blocked", [])):
+                notes.append(f"{s['host']}: {u} now resolves to a forbidden address and was taken out of use")
+                netguard.event("upstream-blocked", host=s["host"], url=u)
+            for u in set(s.get("ssrf_blocked", [])) - set(blocked):
+                notes.append(f"{s['host']}: {u} is acceptable again")
+                netguard.event("upstream-cleared", host=s["host"], url=u)
+            s["ssrf_blocked"], s["ssrf_seen"] = blocked, seen
+        if _applier:
+            ok, _msg = _applier(cfg)
+            if ok:
+                store.save(cfg)
+                if notes:
+                    store.audit("system", "ssrf upstream check", "; ".join(notes)[:400])
+                    alerts.notify("ssrf_blocked", "Upstream address check", "; ".join(notes), severity="critical", force=True)
+
+
 def _ver(v):
     try:
         return tuple(int(x) for x in v.split("."))
@@ -509,6 +562,6 @@ def start(applier):
     alerts.start()
     # every replica: its own logs, its own engine, local clean-up. Leader only: everything that must happen once for the whole cluster.
     local = ((ingest_access, 2), (ingest_audit, 2), (prune, 3600), (health_tick, 5))
-    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600), (upstream_health_tick, 10))
+    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600), (upstream_health_tick, 10), (ssrf_tick, 15))
     for fn, every in local + tuple((cluster.leader_only(f), e) for f, e in once):
         threading.Thread(target=_loop, args=(fn, every), daemon=True, name=fn.__name__).start()
