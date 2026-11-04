@@ -18,8 +18,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # get.trivy.dev stopped resolving on 2026-11-03 (aquasecurity/setup-trivy#42), so install Trivy
+      # from its GitHub release, verify the checksum, and tell trivy-action to skip its own setup.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.70.0"
+          TRIVY_SHA256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
+        run: |
+          curl -fsSLo trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf trivy.tar.gz -C "$HOME/.local/bin" trivy
+          rm trivy.tar.gz
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
+          skip-setup-trivy: true
           scan-type: config
           severity: HIGH,CRITICAL
           exit-code: "1"
@@ -28,8 +42,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t shieldwaf:ci .
+      # get.trivy.dev stopped resolving on 2026-11-03 (aquasecurity/setup-trivy#42), so install Trivy
+      # from its GitHub release, verify the checksum, and tell trivy-action to skip its own setup.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.70.0"
+          TRIVY_SHA256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
+        run: |
+          curl -fsSLo trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf trivy.tar.gz -C "$HOME/.local/bin" trivy
+          rm trivy.tar.gz
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
+          skip-setup-trivy: true
           image-ref: shieldwaf:ci
           severity: HIGH,CRITICAL
           ignore-unfixed: true
