@@ -214,7 +214,7 @@ tl = list(T.values())
 codes = {re.search(r"Setup code: (\w+)", kube("logs", p[0], "-c", "panel")).group(1) for p in ps if "Setup code" in kube("logs", p[0], "-c", "panel")}
 check("every replica shows the SAME setup code (shared bootstrap secret)", len(codes) == 1, str(codes))
 code = codes.pop() if codes else ""
-fps = {p[0]: kube("exec", p[0], "-c", "panel", "--", "sh", "-c", "sha256sum /data/challenge.key /data/secret.key /data/certs/panel/fullchain.pem | cut -c1-16") for p in ps}
+fps = {p[0]: kube("exec", p[0], "-c", "panel", "--", "sh", "-c", "sha256sum /data/challenge.key /private/secret.key /data/certs/panel/fullchain.pem | cut -c1-16") for p in ps}
 check("challenge key, session key and panel certificate are identical on all replicas", len(set(fps.values())) == 1, str(fps))
 row = psql("select count(*) from sfiles where path in ('challenge.key','secret.key','certs/panel')")
 check("shared files are stored in the database", row == "3", row)
