@@ -64,6 +64,7 @@ password is generated in your cluster and the admin account is created in your b
 | **OpenAPI validation** | upload your OpenAPI 3 document: unknown paths / methods / parameters / JSON fields, missing required fields, wrong types, enums, ranges and lengths are refused (or logged in detect mode) |
 | **High availability** | 2+ replicas, shared sessions, changes applied on every replica (the confirmation says "applied on 3/3 replicas"), one leader for once-only jobs with automatic failover, encrypted file sharing through the database, rolling updates without dropped requests, **Cluster** page ([`docs/INSTALL.md`](docs/INSTALL.md#high-availability)) |
 | **Fast reloads** | one shared OWASP rule set instead of one per site: 80 sites apply in about 6 seconds; `nginx -t` takes about 0.2 s |
+| **Backups and database failover** | nightly **encrypted** backups (`k8s/backup.yaml`: dump, AES-256, read-back check, 14-day retention) and a one-command **restore** (`scripts/restore-db.sh` / `.ps1`); the panel survives a database primary failure (tested against a real primary and standby: about 7 seconds, no lost writes); a ready manifest for a replicated database with CloudNativePG |
 | **PostgreSQL** | configuration, attack log, sessions and audit trail live in PostgreSQL (in-cluster, hardened) or in your managed PostgreSQL |
 | **Users and roles** | several administrators and read-only **viewers**; forced password change for new users; reset 2FA / revoke sessions |
 | **Rate limiting, IP control** | per-IP rate limit, per-site allow/deny lists, manual bans, **auto-ban** (like fail2ban), method allow-list |
@@ -177,7 +178,7 @@ page, rate limiting, auto-ban, backup contents and audit trail, the positive sec
 - **No independent audit.** A documented self-review is in [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md); get a third-party test before relying on it for high-value systems.
 - **Detection is partly pattern-based** (OWASP rules). The positive model, reputation feeds, country rules, challenge and flood defence add protection that does not depend on patterns, but keep your applications patched.
 - **No volumetric DDoS protection** (impossible inside a cluster); application-layer floods are handled; see [`docs/DDOS.md`](docs/DDOS.md) for what to put in front.
-- **The database is the one single point of failure.** The replicas keep serving traffic when it is down (tested), but you cannot change the configuration until it is back, and a replica that is *newly started* during an outage cannot start. For real redundancy use a managed, replicated PostgreSQL (see `docs/CLOUD.md`).
+- **The bundled database is one instance.** The replicas keep serving traffic when it is down (tested), but you cannot change the configuration until it is back, and a replica that is *newly started* during an outage cannot start. Set up the nightly backups (`k8s/backup.yaml`) and, for real redundancy, use a replicated PostgreSQL (managed service, or `k8s/ha-database/cloudnative-pg.yaml`; see `docs/CLOUD.md`). The CloudNativePG manifest itself was not run in this project's tests; the panel's behaviour during a failover was.
 - Rate limits and the per-address connection cap are counted **per replica** (each replica sees only its own share of the traffic), so with N replicas an address can use up to N times the limit. Plan the numbers accordingly.
 - Reload time is now almost independent of the number of sites, except while an OWASP rule-set update is being canary-tested (two rule-set versions cannot be shared): then each site loads its own copy again and reloads are slower; test canaries on few sites.
 - Load balancing is simple: a request is sent to a randomly chosen (weighted) healthy backend. There is no connection reuse tuning, no slow-start and no session replication; health checks are done by one replica (the leader) and take about 20 seconds to react.
@@ -197,6 +198,7 @@ report security problems privately as described in [`SECURITY.md`](SECURITY.md).
 |---|---|
 | `Dockerfile`, `engine-entrypoint.sh`, `panel-entrypoint.sh` | the single image: engine and panel |
 | `panel/cluster.py`, `panel/sharedfs.py` | high availability: leader election, change propagation, encrypted shared files |
+| `k8s/backup.yaml`, `scripts/restore-db.*`, `k8s/ha-database/` | encrypted nightly backups, restore, and the replicated-database option |
 | `tests/` | the 192-check regression suite, the 91-check high-availability suite and their runner |
 | `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
 | `k8s/shieldwaf.yaml` | hardened namespace, replicated Deployment, disruption budget, PostgreSQL StatefulSet, services, network policies |

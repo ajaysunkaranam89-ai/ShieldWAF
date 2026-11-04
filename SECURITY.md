@@ -79,6 +79,9 @@ Administrator actions are serialised across replicas with a database lock (no lo
 ### Several upstreams
 Every extra backend goes through the same checks as the main one (address syntax, no loopback / link-local / cloud-metadata addresses, the allowed-suffix list), at most ten per site. The health probe is a plain GET without cookies or credentials to the address you configured, made by the leader replica, with a 3-second limit, without following redirects. Writes are never retried on another backend.
 
+### Backups
+The nightly backup job (`k8s/backup.yaml`) runs as a non-root pod with a read-only filesystem, no capabilities and a network policy that allows only the database and DNS. The dump is encrypted with AES-256-CBC (PBKDF2, 200,000 iterations, random salt) using the key `SHIELD_DATA_KEY`, and read back before it counts as a backup. A backup contains everything in the database (configuration, password hashes, two-factor secrets, logs) and the encrypted shared files: **whoever holds a backup file AND the secret `shieldwaf-db` can read all of it**, so store the two in different places and protect both. Restoring needs rights on the namespace (it scales the deployment and runs a pod that mounts the secret). Backups are not tamper-proof: encryption protects secrecy, not authenticity; keep them on storage that others cannot write to.
+
 ### Automatic certificates (ACME)
 The ACME client (`panel/acme.py`, RFC 8555) only talks to the authority address you chose in Settings: it must be https and, outside tests, must resolve to public addresses only (no request into the cluster);
 every address the authority returns must be on the same host; the issued certificate is checked (right name, valid now, matches the freshly generated key) before it is used; the account key is created once, kept

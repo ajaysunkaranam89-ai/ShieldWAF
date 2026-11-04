@@ -5,13 +5,14 @@
 #
 # Needs: kubectl (pointing at a test cluster), python 3.9+, curl, openssl, sed. The images shieldwaf:2.3 and shieldwaf-db:16 must already
 # be on the cluster (see docs/INSTALL.md). The pods need outbound internet (GitHub, threat feeds, the registries' country files).
-# SUITES=functional runs only the functional suite, SUITES=ha only the high-availability suite (default: both). The high-availability suite also needs
+# SUITES=functional runs only the functional suite, SUITES=ha only the high-availability suite, SUITES=backup only the backup and restore test (default: both). The high-availability suite also needs
 # docker (it fetches the test CA of Pebble) and internet access to pull ghcr.io/letsencrypt/pebble images.
 # Careful: the namespaces "shieldwaf-test", "sink-test" and "shieldwaf-demo" are deleted and recreated. Nothing else is touched.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
 PY="$(command -v python3 || command -v python)"
 PIDS=()
+export TEST_BASH="$(cygpath -m "$(command -v bash)" 2>/dev/null || command -v bash)"     # the Python tests call the restore script with this shell
 cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done; }
 trap cleanup EXIT
 
@@ -34,6 +35,12 @@ for ns in sink-test shieldwaf-demo; do kubectl -n "$ns" delete pod --all --force
 kubectl wait --for=delete namespace/sink-test namespace/shieldwaf-demo --timeout=120s >/dev/null 2>&1
 kubectl apply -f "$HERE/demo-apps.yaml" -f "$HERE/sink.yaml" >/dev/null
 
+if [ "${SUITES:-all}" = "backup" ]; then
+  echo "== deploying a test copy of A Shield WAF (backup and restore test only)"
+  deploy_waf
+  "$PY" -u "$HERE/backup_test.py"
+  exit $?
+fi
 if [ "${SUITES:-all}" = "ha" ]; then
   echo "== deploying a test copy of A Shield WAF (high-availability suite only)"
   deploy_waf
@@ -61,7 +68,11 @@ echo "== functional suite finished with exit code $RC; now the high-availability
 deploy_waf
 "$PY" -u ha_test.py
 RC2=$?
-echo "== finished: functional exit code $RC, high-availability exit code $RC2 (0 = all checks passed). Remove the test namespaces with:"
+echo "== now the backup and restore suite on a fresh copy"
+deploy_waf
+"$PY" -u backup_test.py
+RC3=$?
+echo "== finished: functional exit code $RC, high-availability exit code $RC2, backup exit code $RC3 (0 = all checks passed). Remove the test namespaces with:"
 echo "   kubectl delete namespace shieldwaf-test sink-test shieldwaf-demo"
-[ "$RC" = 0 ] && [ "$RC2" = 0 ]
+[ "$RC" = 0 ] && [ "$RC2" = 0 ] && [ "$RC3" = 0 ]
 exit $?

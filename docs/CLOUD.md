@@ -19,6 +19,15 @@ database. Certificates, private keys, alert secrets, threat-feed data and downlo
 key `SHIELD_DATA_KEY` (create it with `scripts/create-db-secret.*`, or put a random 32-byte url-safe base64 value there yourself). Use an encrypted storage class for the database volume
 (EBS gp3 with KMS, Azure Disk with CMK, GCE PD with CMEK), snapshot it on a schedule, and back up the secret separately. A managed PostgreSQL must allow about 20 connections per replica.
 
+### Replicated database (no single point of failure)
+The firewall replicas keep working while the database is down, but changes and new replicas need it. To remove that single point of failure use a **replicated PostgreSQL**:
+- **Managed:** Multi-AZ Amazon RDS, Azure Database for PostgreSQL (zone redundant), Cloud SQL (high availability). Use their failover endpoint in `SHIELD_DB_URL`.
+- **In the cluster:** `k8s/ha-database/cloudnative-pg.yaml` (CloudNativePG operator: a primary and two standbys with automatic failover). Steps are in the file. This manifest was **not** run in this project's tests.
+- **Any primary/standby setup:** list every database host in the connection string and the panel finds the writable one by itself:
+  `postgresql://shieldwaf:<password>@db1:5432,db2:5432/shieldwaf?target_session_attrs=read-write`.
+**What the panel does when the primary fails** (tested against a real PostgreSQL primary and streaming standby, `tests/dbfailover.sh`): the first database calls after the failure are retried on a new connection, the panel finds the promoted standby on its own, and writes continue; the test saw about 7 seconds of interruption (including the seconds the test waited before promoting) and no lost acknowledged write.
+**Backups still matter** with a replicated database (a replica copies mistakes too): use `k8s/backup.yaml` and set its `PGHOST` to your database service.
+
 ## 3. Exposing the protected traffic (only 80/443)
 Create a **separate** Service of type LoadBalancer that exposes the proxy ports only, never the panel:
 ```yaml

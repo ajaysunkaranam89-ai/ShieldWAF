@@ -358,7 +358,7 @@ spec:
       port: 5432
       targetPort: 5432
 ---
-# Only the panel may talk to the database.
+# Only the panel (and the backup / restore pods) may talk to the database.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -374,6 +374,9 @@ spec:
         - podSelector:
             matchLabels:
               app: shieldwaf
+        - podSelector:                 # backup and restore pods (k8s/backup.yaml, scripts/restore-db.*)
+            matchLabels:
+              app: shieldwaf-backup
       ports:
         - { protocol: TCP, port: 5432 }
 

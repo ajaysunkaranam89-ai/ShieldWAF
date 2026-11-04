@@ -127,8 +127,21 @@ if the Sites page reports a missing certificate after the upgrade, paste it agai
 Settings, sites, users, the attack log and the audit trail are kept.
 
 ## Backup and restore
+**Automatic encrypted backups (recommended, 2 minutes):**
+```bash
+kubectl apply -f k8s/backup.yaml
+```
+Every night at 02:30 UTC a job dumps the database, encrypts it (AES-256, the key is `SHIELD_DATA_KEY` from the secret `shieldwaf-db`), proves the file can be read back, and removes backups older than 14 days. They are kept on the volume `shieldwaf-backups` (5 Gi).
+```bash
+kubectl create job --from=cronjob/shieldwaf-db-backup backup-now -n shieldwaf      # a backup right now
+sh scripts/restore-db.sh list                                                      # which backups exist (Windows: .\scripts\restore-db.ps1 list)
+sh scripts/restore-db.sh latest                                                    # restore the newest (asks first; Windows: .\scripts\restore-db.ps1 latest)
+```
+**Restore** stops the firewall replicas, REPLACES the database with the backup (everything saved after it is lost), and starts the replicas again with the same count. It is meant to work onto a new, empty installation too (not tested here: create the secret with the same `SHIELD_DATA_KEY`, apply the manifests, apply `k8s/backup.yaml`, copy the backup file onto the volume, restore).
+**Important:** a backup on the same cluster does not survive losing the cluster. Copy the files off it regularly (for example `kubectl cp` from a pod that mounts the volume, or your storage provider's snapshots of `shieldwaf-backups`), and keep a copy of the secret `shieldwaf-db`: **without its key a backup cannot be decrypted**.
+
 - **Configuration:** in the panel, **Backup, Download config** (sites, settings, pages; never passwords, keys or secrets). **Import** restores it.
-- **Everything:** snapshot the database volume (`pgdata-shieldwaf-db-0`, it also holds the encrypted shared files) with your storage provider, and keep a copy of the secret `shieldwaf-db` (it holds the key for those files), or run `kubectl exec -n shieldwaf shieldwaf-db-0 -- pg_dump -U shieldwaf shieldwaf > backup.sql`. Protect backups like secrets.
+- **By hand:** snapshot the database volume (`pgdata-shieldwaf-db-0`, it also holds the encrypted shared files) with your storage provider, and keep a copy of the secret `shieldwaf-db` (it holds the key for those files), or run `kubectl exec -n shieldwaf shieldwaf-db-0 -- pg_dump -U shieldwaf shieldwaf > backup.sql`. Protect backups like secrets.
 
 ## Uninstall
 ```bash

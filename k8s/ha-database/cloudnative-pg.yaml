@@ -1,0 +1,79 @@
+# Replicated PostgreSQL for A Shield WAF with the CloudNativePG operator (one primary + two standbys, automatic failover).
+# NOT part of the default install, and NOT run in this project's own tests (the panel's behaviour during a primary failure IS tested against a real
+# PostgreSQL primary and standby: tests/dbfailover.sh). Read docs/CLOUD.md, "Replicated database", before using it.
+#
+#  1. Install the operator (see https://cloudnative-pg.io/documentation/ for the current command), for example:
+#       kubectl apply --server-side -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.0.yaml
+#  2. Create the database password (do not put it in git) and this cluster:
+#       kubectl -n shieldwaf create secret generic shieldwaf-pg-app --type=kubernetes.io/basic-auth \
+#         --from-literal=username=shieldwaf --from-literal=password="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+#       kubectl apply -f k8s/ha-database/cloudnative-pg.yaml
+#  3. Point the panel at the new service (read-write, always the current primary). Put the same password into the connection string:
+#       postgresql://shieldwaf:<password>@shieldwaf-pg-rw:5432/shieldwaf?sslmode=require
+#     store it as the key SHIELD_DB_URL of the secret shieldwaf-db (keep SHIELD_DATA_KEY), then remove the bundled StatefulSet shieldwaf-db
+#     and restart the replicas:  kubectl rollout restart deploy/shieldwaf -n shieldwaf
+#     (Moving existing data: take a backup with k8s/backup.yaml first, then restore it into the new database with scripts/restore-db.* and DB_HOST=shieldwaf-pg-rw.)
+#  4. Backups: the nightly job of k8s/backup.yaml works against it too: set its PGHOST to shieldwaf-pg-rw (and PGUSER/PGDATABASE if you changed them);
+#     CloudNativePG also offers its own continuous archiving (see its documentation).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: shieldwaf-pg
+  namespace: shieldwaf
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  postgresql:
+    parameters:
+      max_connections: "300"        # about 20 connections per firewall replica
+  bootstrap:
+    initdb:
+      database: shieldwaf
+      owner: shieldwaf
+      secret:
+        name: shieldwaf-pg-app
+  storage:
+    size: 10Gi
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}
+---
+# The namespace is default-deny: let the firewall replicas and the backup pods reach the database, and let the database pods talk to each other
+# (replication) and to the operator.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-pg-allow
+  namespace: shieldwaf
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: shieldwaf-pg
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: shieldwaf}}
+        - podSelector: {matchLabels: {app: shieldwaf-backup}}
+        - podSelector: {matchLabels: {cnpg.io/cluster: shieldwaf-pg}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cnpg-system}}
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 8000}
+  egress:
+    - to:
+        - podSelector: {matchLabels: {cnpg.io/cluster: shieldwaf-pg}}
+    - to:
+        - namespaceSelector: {}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0, except: ["169.254.0.0/16"]}
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 6443}

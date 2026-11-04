@@ -23,6 +23,7 @@ applications with unique names, so your own applications are never touched), ope
 kubectl delete namespace shieldwaf-test sink-test shieldwaf-demo
 ```
 
+`backup_test.py` takes an encrypted backup, damages the database, restores it and checks that the firewall is running again (`SUITES=backup bash tests/run.sh`). `dbfailover.sh` runs the panel's database layer against a real PostgreSQL primary and standby in Docker and fails the primary over (no cluster needed).
 `acme.sh` runs the certificate client against Pebble in throw-away Docker containers (needs Docker and internet access to pull the images); it does not need a cluster.
 
 ## Notes

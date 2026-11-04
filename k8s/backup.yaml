@@ -1,0 +1,122 @@
+# Automatic, encrypted backups of the A Shield WAF database (configuration, users, logs, audit trail, and the encrypted shared files).
+# Apply AFTER k8s/shieldwaf.yaml:   kubectl apply -f k8s/backup.yaml
+#   * every night at 02:30 UTC a CronJob runs pg_dump, encrypts the dump (AES-256, key = SHIELD_DATA_KEY from the secret shieldwaf-db),
+#     proves it can be read back (pg_restore -l), and deletes backups older than KEEP_DAYS (14);
+#   * the files live on the volume shieldwaf-backups (5 Gi). A backup on the same cluster does not protect against losing the cluster:
+#     copy the files off it (see docs/INSTALL.md, "Backup and restore") and keep a copy of the secret, without which they cannot be decrypted.
+#   * take one right now:   kubectl create job --from=cronjob/shieldwaf-db-backup backup-now -n shieldwaf
+#   * restore:              sh scripts/restore-db.sh latest        (Windows: .\scripts\restore-db.ps1 latest)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shieldwaf-backups
+  namespace: shieldwaf
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shieldwaf-db-backup
+  namespace: shieldwaf
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: shieldwaf-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: shieldwaf-db:16
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom: {secretKeyRef: {name: shieldwaf-db, key: POSTGRES_PASSWORD}}
+                - name: SHIELD_DATA_KEY
+                  valueFrom: {secretKeyRef: {name: shieldwaf-db, key: SHIELD_DATA_KEY}}
+                - name: KEEP_DAYS
+                  value: "14"
+                - name: PGHOST                       # the database service (change it if you use a replicated database, see docs/CLOUD.md)
+                  value: shieldwaf-db
+                - name: PGUSER
+                  value: shieldwaf
+                - name: PGDATABASE
+                  value: shieldwaf
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+                  f="/backups/shieldwaf-$(date -u +%Y%m%d-%H%M%S).dump.enc"
+                  pg_dump -Fc \
+                    | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:SHIELD_DATA_KEY -out "$f.part"
+                  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SHIELD_DATA_KEY -in "$f.part" | pg_restore -l > /dev/null
+                  mv "$f.part" "$f"
+                  echo "backup written and verified: $f ($(wc -c < "$f") bytes, starts with $(head -c 8 "$f" | od -An -c | tr -s ' '))"
+                  find /backups -name 'shieldwaf-*.dump.enc' -mtime +"$KEEP_DAYS" -delete
+                  find /backups -name '*.part' -mmin +120 -delete
+                  echo "backups on the volume:"; ls -1 /backups | grep '^shieldwaf-' | tail -n 20
+              resources:
+                requests: {cpu: 20m, memory: 64Mi}
+                limits: {cpu: "1", memory: 256Mi}
+              volumeMounts:
+                - {name: backups, mountPath: /backups}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backups
+              persistentVolumeClaim: {claimName: shieldwaf-backups}
+            - name: tmp
+              emptyDir: {sizeLimit: 64Mi}
+---
+# The default-deny policy of the namespace also covers backup and restore pods: let them reach the database (and DNS), nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-backup-allow
+  namespace: shieldwaf
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf-backup
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: shieldwaf-db
+      ports:
+        - {protocol: TCP, port: 5432}
