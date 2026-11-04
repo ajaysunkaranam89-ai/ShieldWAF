@@ -481,6 +481,30 @@ def ssrf_tick():
                     alerts.notify("ssrf_blocked", "Upstream address check", "; ".join(notes), severity="critical", force=True)
 
 
+def audit_tick():
+    """Leader, every 10 minutes: move backup / restore events written by the backup jobs into the audit chain, verify the chain (alert if it is broken), and apply
+    the retention setting."""
+    con = store.db()
+    for r in con.execute("SELECT id, ts, kind, detail FROM backup_log WHERE ingested=0 ORDER BY id").fetchall():
+        store.audit("backup-job", f"backup-{r['kind']}", f"{r['detail']} (at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(float(r['ts'])))} UTC)", "", category="backup")
+        con.execute("UPDATE backup_log SET ingested=1 WHERE id=?", (r["id"],))
+    con.commit()
+    days = int(store.load()["settings"].get("audit_retention_days", 0) or 0)
+    if days > 0:
+        try:
+            removed = store.audit_purge(time.time() - days * 86400)
+            if removed:
+                store.audit("system", "audit retention", f"{removed} records older than {days} days removed; the chain continues from a stored anchor")
+        except Exception as e:  # noqa: BLE001 - the runtime database role may not be allowed to delete (by design)
+            store.meta_set("audit_purge_error", f"{type(e).__name__}: {str(e)[:150]}")
+    res = store.verify_audit()
+    store.meta_set("audit_verify", json.dumps({**res, "at": time.time()}))
+    if not res["ok"] and store.meta_get("audit_tamper_alerted") != str(res.get("broken_at")):
+        store.meta_set("audit_tamper_alerted", res.get("broken_at"))
+        alerts.notify("audit_tamper", "Audit trail integrity check FAILED", f"record #{res.get('broken_at')}: {res.get('reason')}", severity="critical", force=True)
+        print(json.dumps({"app": "shieldwaf", "category": "audit", "event": "tamper-detected", "broken_at": res.get("broken_at"), "reason": res.get("reason")}), flush=True)
+
+
 def _ver(v):
     try:
         return tuple(int(x) for x in v.split("."))
@@ -562,6 +586,6 @@ def start(applier):
     alerts.start()
     # every replica: its own logs, its own engine, local clean-up. Leader only: everything that must happen once for the whole cluster.
     local = ((ingest_access, 2), (ingest_audit, 2), (prune, 3600), (health_tick, 5))
-    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600), (upstream_health_tick, 10), (ssrf_tick, 15))
+    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600), (upstream_health_tick, 10), (ssrf_tick, 15), (audit_tick, 600))
     for fn, every in local + tuple((cluster.leader_only(f), e) for f, e in once):
         threading.Thread(target=_loop, args=(fn, every), daemon=True, name=fn.__name__).start()

@@ -1,5 +1,7 @@
 """Persistent state for ShieldWAF: the configuration (sites, settings, users, bans), events, access hits, audit trail, sessions.
 PostgreSQL in production; every replica of the panel talks to the same database (see cluster.py for high availability)."""
+import hashlib
+import hmac
 import json
 import os
 import sqlite3
@@ -83,7 +85,7 @@ DEFAULT_SETTINGS = {
     # alerting + SIEM export (channels are managed in the GUI; secrets live in /data/secrets, never here)
     "alerts": {"channels": [], "cooldown_s": 300, "spike": {"enabled": True, "blocked_per_min": 100},
                "events": {"engine_down": True, "engine_recovered": True, "config_failed": True, "under_attack": True, "attack_spike": True,
-                          "auto_ban": True, "upstream_down": True, "ssrf_blocked": True, "login_lockout": True, "admin_change": True, "cert_expiring": True, "feeds_failed": True,
+                          "auto_ban": True, "upstream_down": True, "ssrf_blocked": True, "audit_tamper": True, "login_lockout": True, "admin_change": True, "cert_expiring": True, "feeds_failed": True,
                           "rules_update": True}},
     # OWASP rule-set updates (see crsupdate.py): "baked" = the version inside the image
     "crs": {"active": "baked", "previous": "", "staged": "", "staged_sha256": "", "staged_at": 0, "latest": "", "checked_at": 0,
@@ -96,6 +98,7 @@ DEFAULT_SETTINGS = {
     "acme": {"email": "", "directory": "https://acme-v02.api.letsencrypt.org/directory", "agreed": False},
     # layer-7 DoS defence: automatic "under attack" mode when one site receives too many requests per second
     "ddos": {"auto": False, "rps_threshold": 200, "window_s": 20, "hold_min": 15},
+    "audit_retention_days": 0,      # 0 = keep the audit trail forever; otherwise the leader removes older records from the start of the chain (keeping an anchor)
 }
 
 DEFAULT_SITE = {
@@ -306,9 +309,9 @@ def db():
     return con
 
 
-def init_db():
+def _baseline_ddl():
     pk = "BIGSERIAL PRIMARY KEY" if PG else "INTEGER PRIMARY KEY"
-    ddl = f"""
+    return f"""
     CREATE TABLE IF NOT EXISTS config(id INTEGER PRIMARY KEY, data TEXT);
     CREATE TABLE IF NOT EXISTS events(id {pk}, ts DOUBLE PRECISION, ip TEXT, host TEXT, method TEXT, uri TEXT,
         rule_id TEXT, msg TEXT, score TEXT, status INTEGER, blocked INTEGER);
@@ -327,12 +330,84 @@ def init_db():
     CREATE TABLE IF NOT EXISTS sso_pending(state TEXT PRIMARY KEY, nonce TEXT, verifier TEXT, binder TEXT, created DOUBLE PRECISION);
     CREATE TABLE IF NOT EXISTS sfiles(path TEXT PRIMARY KEY, kind TEXT, sha TEXT, mode INTEGER, data TEXT, updated DOUBLE PRECISION)
     """
+
+
+# Versioned, forward-only schema migrations. Each runs once, in order, inside one transaction, under a cluster-wide lock (replicas starting together
+# cannot race). Never edit an applied migration: add a new one. Rollback = restore the pre-upgrade backup (docs/ROLLBACK_GUIDE.md); migrations only ADD.
+def _migrations():
+    base = [x.strip() for x in _baseline_ddl().split(";") if x.strip()]
+    big = "BIGINT"
+    return [
+        (1, "baseline schema (2.3)", base),
+        (2, "tamper-evident audit trail and backup events", [
+            f"ALTER TABLE audit ADD COLUMN seq {big}",
+            "ALTER TABLE audit ADD COLUMN category TEXT DEFAULT ''",
+            "ALTER TABLE audit ADD COLUMN request_id TEXT DEFAULT ''",
+            "ALTER TABLE audit ADD COLUMN prev_hash TEXT DEFAULT ''",
+            "ALTER TABLE audit ADD COLUMN hash TEXT DEFAULT ''",
+            "CREATE UNIQUE INDEX IF NOT EXISTS audit_seq ON audit(seq)",
+            "CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts)",
+            f"CREATE TABLE IF NOT EXISTS backup_log(id {'BIGSERIAL PRIMARY KEY' if PG else 'INTEGER PRIMARY KEY'}, ts DOUBLE PRECISION, kind TEXT, detail TEXT, ingested INTEGER DEFAULT 0)",
+        ]),
+    ]
+
+
+MIGRATION_LOCK = 724004
+
+
+def current_schema_version():
+    try:
+        r = db().execute("SELECT MAX(version) v FROM schema_migrations").fetchone()
+        db().commit()
+        return int(r["v"] or 0)
+    except Exception:  # noqa: BLE001
+        try:
+            db().raw.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
+
+
+def migrate():
+    """Apply every migration that has not run yet. Safe to call from every replica at the same time."""
+    con = db()
+    if PG:
+        con.execute("SELECT pg_advisory_lock(?)", (MIGRATION_LOCK,))
+        con.commit()
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, name TEXT, applied_at DOUBLE PRECISION)")
+        con.commit()
+        done = {int(r["version"]) for r in con.execute("SELECT version FROM schema_migrations").fetchall()}
+        con.commit()
+        for version, name, stmts in _migrations():
+            if version in done:
+                continue
+            try:
+                for stmt in stmts:
+                    con.execute(stmt)
+                con.execute("INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)", (version, name, time.time()))
+                con.commit()                      # PostgreSQL: DDL is transactional, so a failed migration leaves nothing behind
+                print(f"[shieldwaf] database migration {version} applied: {name}", flush=True)
+            except Exception:
+                try:
+                    con.raw.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+    finally:
+        if PG:
+            try:
+                con.execute("SELECT pg_advisory_unlock(?)", (MIGRATION_LOCK,))
+                con.commit()
+            except Exception:  # noqa: BLE001
+                pass
+    backfill_audit_chain()
+
+
+def init_db():
     for attempt in range(40):          # the database pod may still be starting
         try:
-            con = db()
-            for stmt in [x.strip() for x in ddl.split(";") if x.strip()]:
-                con.execute(stmt)
-            con.commit()
+            migrate()
             return
         except Exception as e:  # noqa: BLE001
             if not PG or attempt == 39:
@@ -342,10 +417,224 @@ def init_db():
             time.sleep(3)
 
 
-def audit(user, action, detail="", ip=""):
+# ----------------------------------------------------------------------------------------------- tamper-evident audit trail
+# Every audit record carries seq, prev_hash and hash = HMAC-SHA256(key, canonical JSON of the record and prev_hash). The key (SHIELD_AUDIT_KEY, or derived
+# from SHIELD_DATA_KEY) is not stored in the database, so somebody who can only write to the database cannot recompute the chain after editing a row:
+# verify_audit() then names the first broken record. Somebody with code execution in the panel holds the key: for that case export the chain regularly
+# (signed export, docs/DISASTER_RECOVERY.md) and keep the exports elsewhere; the database role of the panel also gets INSERT/SELECT only on this table
+# (docs/SECURITY_HARDENING.md).
+_audit_lock = threading.Lock()
+_req = threading.local()
+audit_hooks = []                 # callables(record dict): the SIEM forwarder registers here
+
+
+def set_request_id(rid):
+    _req.rid = (rid or "")[:64]
+
+
+def _audit_key():
+    k = os.environ.get("SHIELD_AUDIT_KEY", "")
+    if k:
+        return k.encode()
+    d = os.environ.get("SHIELD_DATA_KEY", "")
+    return hashlib.sha256(b"shieldwaf-audit-chain-v1:" + (d or "development-only-key").encode()).digest()
+
+
+CATEGORIES = (("login", "auth"), ("logout", "auth"), ("2fa", "auth"), ("sso", "auth"), ("password", "auth"), ("lockout", "auth"), ("setup", "auth"),
+              ("user", "user"), ("role", "user"), ("certificate", "certificate"), ("cert", "certificate"), ("acme", "certificate"),
+              ("backup", "backup"), ("restore", "backup"), ("site", "policy"), ("settings", "policy"), ("config", "policy"), ("rule", "policy"),
+              ("maintenance", "policy"), ("under-attack", "policy"), ("ban", "security"), ("auto-ban", "security"), ("ssrf", "security"),
+              ("upstream", "security"), ("threat", "security"), ("feed", "security"), ("alert", "admin"), ("metrics", "admin"), ("audit", "admin"))
+
+
+def categorize(action):
+    a = (action or "").lower()
+    for key, cat in CATEGORIES:
+        if key in a:
+            return cat
+    return "admin"
+
+
+def _record_hash(rec):
+    body = json.dumps({k: rec[k] for k in ("seq", "ts", "username", "action", "category", "detail", "ip", "request_id", "prev_hash")}, sort_keys=True, separators=(",", ":"))
+    return hmac.new(_audit_key(), body.encode(), hashlib.sha256).hexdigest()
+
+
+def _anchor():
+    """(seq, hash) the chain continues from after old records were removed by the retention job, or (0, 'genesis')."""
+    try:
+        return int(meta_get("audit_anchor_seq", 0)), meta_get("audit_anchor_hash", "genesis")
+    except Exception:  # noqa: BLE001
+        return 0, "genesis"
+
+
+def _append(con, ts, user, action, detail, ip, category, rid):
+    last = con.execute("SELECT seq, hash FROM audit WHERE seq IS NOT NULL ORDER BY seq DESC LIMIT 1").fetchone()
+    seq0, h0 = (int(last["seq"]), last["hash"]) if last else _anchor()
+    rec = {"seq": seq0 + 1, "ts": ts, "username": user, "action": action, "category": category, "detail": detail, "ip": ip, "request_id": rid, "prev_hash": h0}
+    rec["hash"] = _record_hash(rec)
+    con.execute("INSERT INTO audit(seq,ts,username,action,detail,ip,category,request_id,prev_hash,hash) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (rec["seq"], ts, user, action, detail, ip, category, rid, h0, rec["hash"]))
+    return rec
+
+
+def audit(user, action, detail="", ip="", category=None):
+    """Append one record to the audit trail (the only way records are written)."""
+    ts, detail = time.time(), str(detail)[:2000]
+    category = category or categorize(action)
+    rid = getattr(_req, "rid", "")
+    with _audit_lock:
+        con = db()
+        if PG:
+            con.execute("SELECT pg_advisory_xact_lock(724003)")        # one writer at a time across all replicas: the chain has one order
+        rec = _append(con, ts, str(user)[:64], str(action)[:80], detail, str(ip)[:64], category, rid)
+        con.commit()
+    for hook in audit_hooks:
+        try:
+            hook(rec)
+        except Exception:  # noqa: BLE001 - forwarding must never break the action being audited
+            pass
+    return rec
+
+
+def backfill_audit_chain():
+    """Rows written before the chain existed (2.3) are added to it once, in time order, so nothing stays unprotected."""
     con = db()
-    con.execute("INSERT INTO audit VALUES(?,?,?,?,?)", (time.time(), user, action, detail[:500], ip))
+    pending = con.execute("SELECT ts, username, action, detail, ip FROM audit WHERE seq IS NULL ORDER BY ts").fetchall()
     con.commit()
+    if not pending:
+        return 0
+    with _audit_lock:
+        con = db()
+        if PG:
+            con.execute("SELECT pg_advisory_xact_lock(724003)")
+        # re-read under the lock: another replica may have done it
+        pending = con.execute("SELECT ts, username, action, detail, ip FROM audit WHERE seq IS NULL ORDER BY ts").fetchall()
+        n, seen = 0, {}
+        for x in pending:
+            r = dict(x)
+            seen.setdefault((r["ts"], r["username"], r["action"], r["detail"], r["ip"]), 0)
+            seen[(r["ts"], r["username"], r["action"], r["detail"], r["ip"])] += 1
+        for (ts, user, action, detail, ip), count in seen.items():          # delete the unchained copies of a record, then chain `count` copies
+            con.execute("DELETE FROM audit WHERE seq IS NULL AND ts=? AND username=? AND action=? AND detail=?", (ts, user, action, detail))
+            for _ in range(count):
+                _append(con, ts, user or "", action or "", detail or "", ip or "", categorize(action), "")
+                n += 1
+        con.commit()
+    print(f"[shieldwaf] {n} older audit records added to the tamper-evident chain", flush=True)
+    return n
+
+
+def verify_audit(limit=None):
+    """Re-compute the chain. Returns {"ok": bool, "records": n, "head_seq", "head_hash", "broken_at": seq or None, "reason": text}."""
+    con = db()
+    seq0, h0 = _anchor()
+    rows = con.execute("SELECT seq, ts, username, action, category, detail, ip, request_id, prev_hash, hash FROM audit WHERE seq IS NOT NULL ORDER BY seq").fetchall()
+    con.commit()
+    expect_seq, expect_prev, n = None, None, 0
+    for r in rows:
+        r = dict(r)
+        if expect_seq is None:
+            expect_seq, expect_prev = (seq0 + 1, h0) if seq0 else (r["seq"], r["prev_hash"])
+            if seq0 and r["seq"] != expect_seq:
+                return {"ok": False, "records": n, "broken_at": r["seq"], "reason": f"records after the retention anchor are missing (expected #{expect_seq})"}
+        if r["seq"] != expect_seq:
+            return {"ok": False, "records": n, "broken_at": expect_seq, "reason": f"record #{expect_seq} is missing or was removed"}
+        if r["prev_hash"] != expect_prev:
+            return {"ok": False, "records": n, "broken_at": r["seq"], "reason": "the link to the previous record does not match"}
+        if not hmac.compare_digest(r["hash"] or "", _record_hash(r)):
+            return {"ok": False, "records": n, "broken_at": r["seq"], "reason": "the record was changed after it was written"}
+        expect_seq, expect_prev, n = r["seq"] + 1, r["hash"], n + 1
+        if limit and n >= limit:
+            break
+    return {"ok": True, "records": n, "head_seq": (expect_seq - 1) if expect_seq else seq0, "head_hash": expect_prev or h0, "broken_at": None, "reason": ""}
+
+
+def audit_export(since_seq=0, until_seq=None):
+    """Yield JSON lines (SIEM-compatible, one event per line) and a final signed checkpoint line. Keep exports off the cluster: they let you prove later that
+    nothing before the checkpoint was changed, even by somebody who controls the panel."""
+    con = db()
+    rows = con.execute("SELECT seq, ts, username, action, category, detail, ip, request_id, prev_hash, hash FROM audit WHERE seq IS NOT NULL AND seq>? ORDER BY seq", (int(since_seq),)).fetchall()
+    con.commit()
+    last, n = None, 0
+    for r in rows:
+        r = dict(r)
+        if until_seq and r["seq"] > until_seq:
+            break
+        yield json.dumps({"@timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["ts"])), "ts": r["ts"], "app": "shieldwaf", "log_type": "audit", "seq": r["seq"], "actor": r["username"],
+                          "action": r["action"], "category": r["category"], "detail": r["detail"], "source_ip": r["ip"], "request_id": r["request_id"],
+                          "prev_hash": r["prev_hash"], "hash": r["hash"]}, sort_keys=True, separators=(",", ":"))
+        last, n = r, n + 1
+    cp = {"checkpoint": True, "app": "shieldwaf", "log_type": "audit", "records": n, "from_seq": int(since_seq) + 1, "head_seq": last["seq"] if last else int(since_seq),
+          "head_hash": last["hash"] if last else "", "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    cp["signature"] = hmac.new(_audit_key(), json.dumps(cp, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
+    yield json.dumps(cp, sort_keys=True, separators=(",", ":"))
+
+
+def verify_export(lines):
+    """Check an exported file (list of JSON lines) offline against the key: every record's hash, the links, and the checkpoint signature."""
+    recs, cp = [], None
+    for ln in lines:
+        if not ln.strip():
+            continue
+        d = json.loads(ln)
+        if d.get("checkpoint"):
+            cp = d
+        else:
+            recs.append(d)
+    if cp is None:
+        return {"ok": False, "reason": "no checkpoint line (the file is cut short)"}
+    sig = cp.pop("signature", "")
+    if not hmac.compare_digest(sig, hmac.new(_audit_key(), json.dumps(cp, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()):
+        return {"ok": False, "reason": "the checkpoint signature is wrong"}
+    prev = None
+    for d in recs:
+        full = {"seq": d["seq"], "ts": d["ts"], "username": d["actor"], "action": d["action"], "category": d["category"], "detail": d["detail"], "ip": d["source_ip"],
+                "request_id": d["request_id"], "prev_hash": d["prev_hash"]}
+        if not hmac.compare_digest(d["hash"], _record_hash(full)):
+            return {"ok": False, "reason": f"record #{d['seq']} was changed after it was written", "broken_at": d["seq"]}
+        if prev is not None and (d["prev_hash"] != prev[1] or d["seq"] != prev[0] + 1):
+            return {"ok": False, "reason": f"the chain is broken at record #{d['seq']}", "broken_at": d["seq"]}
+        prev = (d["seq"], d["hash"])
+    if recs and (cp["head_seq"] != recs[-1]["seq"] or cp["head_hash"] != recs[-1]["hash"]):
+        return {"ok": False, "reason": "the checkpoint does not match the last record"}
+    return {"ok": True, "records": len(recs), "head_seq": cp["head_seq"], "head_hash": cp["head_hash"]}
+
+
+def check_checkpoint(cp):
+    """Is the database still consistent with an EARLIER export's checkpoint (cp = its parsed last line)? Detects truncation and rewriting of the tail,
+    which the chain alone cannot (a chain cannot prove that records after its head never existed)."""
+    seq = int(cp.get("head_seq", 0))
+    if seq <= 0:
+        return {"ok": True, "reason": "empty checkpoint"}
+    r = db().execute("SELECT hash FROM audit WHERE seq=?", (seq,)).fetchone()
+    db().commit()
+    if not r:
+        a_seq, _ = _anchor()
+        return {"ok": seq <= a_seq, "reason": "removed by the retention job" if seq <= a_seq else f"record #{seq} from the earlier export no longer exists (truncated)"}
+    ok = hmac.compare_digest(r["hash"], cp.get("head_hash", ""))
+    return {"ok": ok, "reason": "" if ok else f"record #{seq} differs from the earlier export (rewritten)"}
+
+
+def audit_purge(before_ts):
+    """Retention: remove records older than `before_ts` from the START of the chain and keep an anchor so the rest still verifies. Needs DELETE rights on the
+    audit table, which the panel's runtime database role does not have by design (docs/SECURITY_HARDENING.md): it only works with a maintenance connection
+    (SHIELD_DB_MAINT_URL) or on SQLite. Returns the number of removed records."""
+    with _audit_lock:
+        con = db()
+        row = con.execute("SELECT seq, hash FROM audit WHERE seq IS NOT NULL AND ts<? ORDER BY seq DESC LIMIT 1", (before_ts,)).fetchone()
+        con.commit()
+        if not row:
+            return 0
+        cut = int(row["seq"])
+        n = con.execute("SELECT COUNT(*) c FROM audit WHERE seq<=?", (cut,)).fetchone()["c"]
+        con.execute("DELETE FROM audit WHERE seq<=?", (cut,))
+        meta_set("audit_anchor_seq", cut)
+        meta_set("audit_anchor_hash", row["hash"])
+        con.commit()
+        return int(n)
+
+
 
 
 def meta_get(k, default=None):

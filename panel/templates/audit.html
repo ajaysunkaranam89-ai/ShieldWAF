@@ -1,8 +1,26 @@
 {% extends "base.html" %}{% block title %}Audit trail - A Shield WAF{% endblock %}
 {% block body %}
 <h1>Audit trail</h1>
-<p class="sub">Who changed what (latest 300 admin actions).</p>
-<div class="card"><table><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th><th>From</th></tr>
-{% for r in rows %}<tr><td style="white-space:nowrap">{{ r.ts|ts }}</td><td>{{ r.username }}</td><td>{{ r.action }}</td><td class="mono">{{ r.detail }}</td><td class="mono">{{ r.ip }}</td></tr>
-{% else %}<tr><td colspan="5" class="hint">Empty.</td></tr>{% endfor %}</table></div>
+<p class="sub">Who did what, from where. Every record is chained to the previous one with a keyed hash (tamper-evident). {{ total }} record(s) match.</p>
+{% if ver %}<div class="flash {{ 'ok' if ver.ok else 'err' }}">Integrity check ({{ ver.at|ts }}): {% if ver.ok %}<b>no change detected</b> in {{ ver.records }} records{% else %}<b>BROKEN at record #{{ ver.broken_at }}</b>: {{ ver.reason }}{% endif %}</div>{% endif %}
+{% if purge_error %}<p class="hint">Retention ({{ retention }} days) could not remove old records: {{ purge_error }}</p>{% endif %}
+<div class="card">
+  <form method="get" class="row" style="align-items:end">
+    <div><label>Search</label><input type="text" name="q" value="{{ q }}" placeholder="action, detail, address or request id"></div>
+    <div><label>Category</label><select name="cat"><option value="">all</option>{% for c in ['auth','user','policy','certificate','backup','security','admin'] %}<option value="{{ c }}" {{ 'selected' if cat == c }}>{{ c }}</option>{% endfor %}</select></div>
+    <div><label>User</label><input type="text" name="actor" value="{{ actor }}"></div>
+    <div><button class="btn sm">Filter</button> <a class="btn sec sm" href="{{ url_for('audit_view') }}">Clear</a></div>
+  </form>
+</div>
+<div class="card" style="margin-top:14px"><table><tr><th>#</th><th>Time</th><th>User</th><th>Category</th><th>Action</th><th>Detail</th><th>From</th><th>Request id</th></tr>
+{% for r in rows %}<tr><td class="mono">{{ r.seq if r.seq else '-' }}</td><td style="white-space:nowrap">{{ r.ts|ts }}</td><td>{{ r.username }}</td><td><span class="pill p-mut">{{ r.category or '-' }}</span></td><td>{{ r.action }}</td><td class="mono">{{ r.detail }}</td><td class="mono">{{ r.ip }}</td><td class="mono hint">{{ r.request_id }}</td></tr>
+{% else %}<tr><td colspan="8" class="hint">Nothing matches.</td></tr>{% endfor %}</table>
+<p style="margin-top:10px">
+  {% if page > 1 %}<a class="btn sec sm" href="{{ url_for('audit_view', q=q, cat=cat, actor=actor, page=page - 1) }}">&laquo; newer</a>{% endif %}
+  <span class="hint">page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a class="btn sec sm" href="{{ url_for('audit_view', q=q, cat=cat, actor=actor, page=page + 1) }}">older &raquo;</a>{% endif %}</p></div>
+<div class="card" style="margin-top:14px"><b>Integrity and export</b>
+  <p class="hint">The leader checks the chain every 10 minutes and alerts if a record was changed or removed. The export is one JSON event per line plus a signed checkpoint line; keep copies where the cluster cannot reach them (a SIEM, object storage with retention lock).</p>
+  <form method="post" action="{{ url_for('audit_verify_now') }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sec sm">Verify now</button></form>
+  <a class="btn sec sm" href="{{ url_for('audit_export_file') }}">Download export (JSON lines)</a></div>
 {% endblock %}

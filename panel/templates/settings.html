@@ -60,6 +60,10 @@
     {% if st.acme.directory not in ['https://acme-v02.api.letsencrypt.org/directory', 'https://acme-staging-v02.api.letsencrypt.org/directory'] %}<option value="{{ st.acme.directory }}" selected>{{ st.acme.directory }}</option>{% endif %}
   </select></div></div>
   <label class="chk"><input type="checkbox" name="acme_agreed" {{ 'checked' if st.acme.agreed }}> I accept the certificate authority's subscriber agreement (see letsencrypt.org/repository)</label></div>
+<div class="card" style="margin-top:14px"><b>Audit trail retention</b>
+  <p class="hint">The audit trail is tamper-evident (a keyed hash chain, see the Audit trail page). 0 keeps it forever; otherwise records older than this are removed from the start of the chain and an anchor keeps the rest verifiable. Export it regularly to a place the cluster cannot change.</p>
+  <input type="hidden" name="audit_form" value="1">
+  <div class="row"><div><label>Keep audit records for (days, 0 = forever)</label><input type="number" name="audit_retention_days" min="0" max="3650" value="{{ st.audit_retention_days }}"></div></div></div>
 <div class="card" style="margin-top:14px"><b>Data retention</b>
   <div class="row"><div><label>Keep logs and events (days)</label><input type="number" name="retention" min="1" max="365" value="{{ st.retention_days }}"></div></div></div>
 <p style="margin-top:14px"><button class="btn">Save settings</button></p></form>
