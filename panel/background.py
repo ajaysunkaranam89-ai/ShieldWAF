@@ -16,6 +16,7 @@ import acme
 import alerts
 import cluster
 import netguard
+import ratelimit
 import crsupdate
 import engine
 import feeds
@@ -581,6 +582,7 @@ def _loop(fn, every):
 
 
 def start(applier):
+    ratelimit.start()                  # cluster-wide rate limit checks for the engine of THIS replica (only when Redis is configured)
     global _applier
     _applier = applier
     alerts.start()

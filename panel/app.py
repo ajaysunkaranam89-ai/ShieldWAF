@@ -29,6 +29,7 @@ import netguard
 import oidc
 import openapi
 import pages
+import ratelimit
 import security
 import sharedfs
 import store
@@ -407,7 +408,8 @@ def parse_site(form, cfg, existing=None):
             "host": form.get("host", "").strip().lower(), "upstream": form.get("upstream", "").strip().rstrip("/"),
             "enabled": bool(form.get("enabled")), "mode": form.get("mode", "block"), "paranoia": int(form.get("paranoia", 1)),
             "threshold": int(form.get("threshold", 5)), "maintenance": bool(form.get("maintenance")), "down_page": bool(form.get("down_page")),
-            "rate_limit": {"enabled": bool(form.get("rl_enabled")), "rps": int(form.get("rl_rps", 10)), "burst": int(form.get("rl_burst", 20))},
+            "rate_limit": {"enabled": bool(form.get("rl_enabled")), "rps": int(form.get("rl_rps", 10)), "burst": int(form.get("rl_burst", 20)),
+                           "scope": "cluster" if form.get("rl_scope") == "cluster" else "replica"},
             "allow_ips": engine.split_lines(form.get("allow_ips", "")), "deny_ips": engine.split_lines(form.get("deny_ips", "")),
             "block_bots": bool(form.get("block_bots")), "sec_headers": bool(form.get("sec_headers")),
             "max_body_mb": int(form.get("max_body_mb", 10)), "methods": " ".join(m for m in form.getlist("methods") if m in ALL_METHODS),
@@ -819,7 +821,7 @@ def sites():
 
 def _form(s, new, cfg):
     cp = security.cert_paths(s)[0] if s["tls"]["enabled"] else None
-    return render_template("site_form.html", s=s, new=new, pages=pages, cinfo=security.cert_info(cp), all_methods=ALL_METHODS)
+    return render_template("site_form.html", s=s, new=new, pages=pages, cinfo=security.cert_info(cp), all_methods=ALL_METHODS, rl_status={"configured": ratelimit.configured()})
 
 
 @app.route("/sites/new", methods=["GET", "POST"])

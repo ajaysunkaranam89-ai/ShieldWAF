@@ -82,6 +82,11 @@ database:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {cpu: "1", memory: 512Mi}
 
+redis:                       # optional Redis for cluster-wide rate limiting (sites with "Counted: across all replicas")
+  enabled: false             # true = the chart deploys Redis and creates its secret; false = none (or your own: set secretName to a secret with SHIELD_REDIS_URL)
+  secretName: shieldwaf-redis
+  image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+
 backup:                      # authenticated, encrypted nightly backups of the database (see docs/DISASTER_RECOVERY.md)
   enabled: false
   schedule: "30 2 * * *"

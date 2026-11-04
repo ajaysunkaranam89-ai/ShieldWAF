@@ -118,7 +118,7 @@ DEFAULT_SITE = {
     "threshold": 5,                 # inbound anomaly score that triggers a block
     "maintenance": False,
     "down_page": True,
-    "rate_limit": {"enabled": False, "rps": 10, "burst": 20},
+    "rate_limit": {"enabled": False, "rps": 10, "burst": 20, "scope": "replica"},
     "allow_ips": [], "deny_ips": [],
     "block_bots": True, "sec_headers": True,
     "max_body_mb": 10,

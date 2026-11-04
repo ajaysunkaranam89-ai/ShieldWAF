@@ -1,0 +1,112 @@
+{{- if .Values.redis.enabled }}
+# Optional Redis for cluster-wide rate limiting (see k8s/redis.yaml for the explanation).
+{{- $ex := lookup "v1" "Secret" .Release.Namespace .Values.redis.secretName }}
+{{- $pw := randAlphaNum 32 }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.redis.secretName }}
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+{{- if $ex }}
+data: {{- toYaml $ex.data | nindent 2 }}
+{{- else }}
+stringData:
+  REDIS_PASSWORD: {{ $pw | quote }}
+  SHIELD_REDIS_URL: {{ printf "redis://:%s@shieldwaf-redis:6379/0" $pw | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shieldwaf-redis
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shieldwaf-redis
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app: shieldwaf-redis
+  template:
+    metadata:
+      labels:
+        app: shieldwaf-redis
+    spec:
+      serviceAccountName: shieldwaf-redis
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", 'exec redis-server --requirepass "$REDIS_PASSWORD" --save "" --appendonly no --maxmemory 128mb --maxmemory-policy volatile-ttl --protected-mode yes']
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.redis.secretName }}, key: REDIS_PASSWORD}}
+          ports:
+            - containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          readinessProbe:
+            exec: {command: ["sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']}
+            periodSeconds: 5
+          livenessProbe:
+            exec: {command: ["sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: "1", memory: 192Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-redis
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: shieldwaf-redis
+  ports:
+    - {name: redis, port: 6379, targetPort: 6379}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-redis-allow
+  labels: {{- include "shieldwaf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf-redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: shieldwaf
+      ports:
+        - {protocol: TCP, port: 6379}
+{{- end }}
+{{- end }}

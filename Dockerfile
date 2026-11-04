@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.title="A Shield WAF" org.opencontainers.image.ver
 
 USER root
 RUN apk upgrade --no-cache \
- && apk add --no-cache python3 py3-flask py3-gunicorn py3-psycopg2 py3-cryptography postgresql16-client \
+ && apk add --no-cache python3 py3-flask py3-gunicorn py3-psycopg2 py3-cryptography py3-redis postgresql16-client \
  && rm -rf /var/cache/apk/* \
  && mkdir -p /data /panel \
  && chown -R 10101:10101 /data /panel
