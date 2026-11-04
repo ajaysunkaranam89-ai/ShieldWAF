@@ -344,7 +344,9 @@ def validate_site(s, cfg):
         if not oa["spec"].strip():
             return "OpenAPI: paste the OpenAPI 3 document (JSON) or switch the mode off."
         try:
-            _rules, rep = openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"])
+            if not (1 <= int(oa["max_body_kb"]) <= 102400 and 2 <= int(oa["max_depth"]) <= 64):
+                return "OpenAPI: body limit 1-102400 KB, JSON depth 2-64."
+            _rules, rep = openapi.compile_rules(oa["spec"], oa["mode"], oa["strict"], oa["unknown_paths"], max_body_kb=oa["max_body_kb"], max_depth=oa["max_depth"])
             oa["report"] = rep[:200]
         except openapi.SpecError as e:
             return f"OpenAPI: {e}"
@@ -419,7 +421,8 @@ def parse_site(form, cfg, existing=None):
             "positive": {"enabled": bool(form.get("pos_enabled")), "paths": form.get("pos_paths", ""),
                          "content_types": form.get("pos_types", ""), "max_url": int(form.get("pos_max_url", 2048) or 2048)},
             "openapi": {"mode": form.get("oa_mode", "off"), "spec": form.get("oa_spec", ""), "strict": bool(form.get("oa_strict")),
-                        "unknown_paths": form.get("oa_unknown", "allow"), "report": []},
+                        "unknown_paths": form.get("oa_unknown", "allow"), "report": [],
+                        "max_body_kb": int(form.get("oa_max_body_kb", 1024) or 1024), "max_depth": int(form.get("oa_max_depth", 10) or 10)},
             "crs_channel": form.get("crs_channel", "stable"),
             "geo": {"mode": form.get("geo_mode", "off"), "countries": " ".join(engine.split_lines(form.get("geo_countries", "").upper()))},
             "exclusions": ex, "custom_rules": form.get("custom_rules", ""),
