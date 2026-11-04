@@ -22,7 +22,7 @@ ALIVE_S = 12
 _st = {"leader": not store.PG, "applied": (-1, -1), "ok": True, "msg": "starting", "fails": 0, "last_try": 0.0, "since_leader": 0.0}
 _started = time.time()
 _apply_lock = threading.Lock()
-VERSION = "2.3"
+VERSION = "2.4"
 
 
 def is_leader():

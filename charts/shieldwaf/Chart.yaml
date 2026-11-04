@@ -2,8 +2,8 @@ apiVersion: v2
 name: shieldwaf
 description: A Shield WAF - open-source web application firewall (nginx + ModSecurity + OWASP CRS) with a web GUI, highly available on Kubernetes
 type: application
-version: 2.3.0
-appVersion: "2.3"
+version: 2.4.0
+appVersion: "2.4"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/ajaysunkaranam89-ai/ShieldWAF
 sources:
