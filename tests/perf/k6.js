@@ -6,6 +6,7 @@ const HOST = __ENV.TARGET_HOST || 'plain.test';
 export const options = {
   scenarios: { load: { executor: 'constant-vus', vus: parseInt(__ENV.VUS || '64'), duration: (__ENV.DURATION || '20') + 's' } },
   discardResponseBodies: true,
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
 };
 const headers = {
   'Host': HOST,

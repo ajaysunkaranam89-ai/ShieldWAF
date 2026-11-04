@@ -409,13 +409,18 @@ def uses_cluster_rl(site):
     return bool(rl["enabled"] and rl.get("scope") == "cluster" and ratelimit.configured())
 
 
+def rl_upstream_block():
+    """http-level upstream of the local limiter with kept-alive connections: without it every request opens a new connection and the limiter starts a thread for it."""
+    return f"  upstream shieldwaf_rl {{ server 127.0.0.1:{ratelimit.PORT}; keepalive 64; }}" + chr(10)
+
+
 def rl_cluster_locations(site):
     """The internal locations for a cluster-wide rate limit: the check against the local limiter (any failure of it means 'allowed': fail-open is decided
     inside the limiter, nginx must never answer 500 because the limiter is restarting) and the 429 answer."""
     sid, rl = site["id"], site["rate_limit"]
     return [f"  location = /__shield/rl_{sid} {{",
             "    internal; modsecurity off;",
-            f"    proxy_pass http://127.0.0.1:{ratelimit.PORT}/check;",
+            "    proxy_pass http://shieldwaf_rl/check;",
             '    proxy_http_version 1.1; proxy_set_header Connection ""; proxy_pass_request_body off; proxy_set_header Content-Length "";',
             "    proxy_set_header X-Real-IP $remote_addr;",
             f"    proxy_set_header X-Shield-Site {sid}; proxy_set_header X-Shield-Rps {int(rl['rps'])}; proxy_set_header X-Shield-Burst {int(rl['burst'])};",
@@ -478,6 +483,7 @@ def _render(cfg):
     try:
         st = cfg["settings"]
         now = time.time()
+        rl_up = rl_upstream_block() if any(uses_cluster_rl(s) for s in cfg["sites"]) else ""
         botlog = ',"bot":"$bot_score"' if any((s.get("bots") or {}).get("mode", "off") != "off" for s in cfg["sites"]) else ""     # the score in the access log, only when used
         with open(f"{gen}/bans.conf", "w") as f:
             f.write("".join(f"deny {b['ip']};\n" for b in cfg["bans"] if b["until"] > now))
@@ -583,7 +589,7 @@ http {{
   resolver {_dns_servers()} valid=10s ipv6=off;
   map_hash_bucket_size 256;                  # upstream addresses are used as map keys (failover to the next upstream)
   map $http_upgrade $connection_upgrade {{ default upgrade; '' close; }}
-  js_path {NJS_DIR};
+{rl_up}  js_path {NJS_DIR};
   js_import challenge from {NJS_DIR}/challenge.js;
   js_set $chal_need challenge.need;
   js_import bots from {NJS_DIR}/bots.js;

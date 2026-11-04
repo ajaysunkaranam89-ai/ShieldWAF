@@ -36,6 +36,7 @@ gen = os.path.join(TMP, "gen")
 os.makedirs(gen)
 open(os.path.join(gen, "bans.conf"), "w").close()
 engine.HTTP_PORT = PORT
+up = engine.rl_upstream_block() if NEW else ""
 servers = "\n".join(engine._server(s, gen, False, "shared") for s in sites)
 zones = "".join(f"  limit_req_zone $binary_remote_addr zone=rl_{s['id']}:10m rate={int(s['rate_limit']['rps'])}r/s;\n" for s in sites if s["rate_limit"]["enabled"])
 js = f"  js_path {engine.NJS_DIR};\n  js_import challenge from {engine.NJS_DIR}/challenge.js;\n  js_set $chal_need challenge.need;\n"
@@ -50,7 +51,7 @@ http {{
   access_log off;
   client_body_temp_path {TMP}/cb; proxy_temp_path {TMP}/px; fastcgi_temp_path {TMP}/fc; uwsgi_temp_path {TMP}/uw; scgi_temp_path {TMP}/sc;
   map $http_upgrade $connection_upgrade {{ default upgrade; "" close; }}
-{js}  limit_conn_zone $binary_remote_addr zone=perip:10m;
+{up}{js}  limit_conn_zone $binary_remote_addr zone=perip:10m;
   limit_req_zone $binary_remote_addr zone=chal_verify:10m rate=10r/s;
 {zones}{servers}
 }}

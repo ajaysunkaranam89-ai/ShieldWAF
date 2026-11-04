@@ -788,6 +788,9 @@ check("export contains no password hashes, keys or metrics token", "$6$" not in 
 s, html, _ = P.req("/audit?q=login-failed")            # the audit page is paginated (50 records) and filterable since 2.4
 s2, html2, _ = P.req("/audit?q=2fa+enabled")
 check("audit trail records source IPs and security events", "login-failed" in html and "2fa enabled" in html2 and "127.0.0.1" in html, (s, s2))
+s, html, _ = P.req("/posture")
+check("the security posture page lists the protections with verdicts", s == 200 and "Security posture" in html and "Database" in html and "Audit trail" in html and "Threat intelligence" in html, s)
+check("...and the database section reports an encrypted connection", "encrypted (TLSv1" in html, re.sub(r"<[^>]+>", " ", html)[600:900])
 s, html, _ = P.req("/logs?only=blocked")
 check("attack log still works", "blocked" in html)
 

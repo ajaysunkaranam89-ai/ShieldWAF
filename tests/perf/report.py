@@ -13,7 +13,7 @@ for f in sorted(os.listdir(d)):
     name = f[:-5]
     if name == "v24_plain":
         base = r["rps"]
-    print(f"{name:32} {r['rps']:9.0f} {r['p50']:8.2f} {r['p95']:8.2f} {r['p99']:8.2f} {r['failed']:7.2%}")
+    print(f"{name:32} {r['rps']:9.0f} {r['p50']:8.2f} {r['p95']:8.2f} {r.get('p99') or 0:8.2f} {r['failed']:7.2%}")
 if base:
     print("\nrelative to v24_plain (req/s):")
     for f in sorted(os.listdir(d)):

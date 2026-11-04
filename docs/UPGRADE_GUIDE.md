@@ -17,6 +17,10 @@ Do this on a test copy first (`IMG_TAG=2.4 bash tests/run.sh` creates and remove
 | Backups | new format and a separate key ring | `sh scripts/create-backup-key.sh`, `kubectl apply -f k8s/backup.yaml`, then take a first 2.4 backup. Keep an offline copy of the key ring |
 | SSRF guard | stricter: upstreams that resolve to loopback, link-local, metadata or carrier-grade-NAT addresses are refused; private addresses stay allowed (RFC 1918 allowlist) | check Settings → upstream private networks if your upstreams are in other private ranges. A site that is now refused is shown as `ssrf_blocked` |
 | Audit trail | verification, export, retention, SIEM forwarding | optional: set the retention in Settings |
+| Panel-only secrets | the session key, setup code and alert / ACME / OIDC secrets move to `/private` (memory volume, panel container only); the engine's `/data` is read-only | the manifest and chart do this; the new volume starts empty and the panel restores the secrets from their encrypted copies in the database (the same mechanism that gives every replica the same files). This upgrade path was **not tested** (the 2.4 test deployments start fresh): after the upgrade check that alert channels still send and that you can sign in; if the session key were not restored everybody would just have to sign in again |
+| Service accounts | `shieldwaf-app`, `shieldwaf-db`, `shieldwaf-backup` (no permissions, no token) | created by the manifest / chart |
+| Optional features | Redis rate limits, bot protection, CrowdSec, point-in-time recovery, guard rails | all off until you switch them on; see `ADMINISTRATOR_GUIDE.md` and `KUBERNETES_DEPLOYMENT.md` |
+| Existing sites | new per-site settings (`bots`, `rate_limit.scope`) | they appear with safe defaults (off / per replica); nothing changes until you edit them |
 
 ## Steps (manifest installation)
 

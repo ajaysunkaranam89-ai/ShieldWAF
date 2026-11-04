@@ -51,13 +51,14 @@ def start_nginx(n, port, limiter_port, scope="cluster"):
     engine.HTTP_PORT = port
     ratelimit.PORT = limiter_port
     server = engine._server(site, gen, False, "shared")
+    upstream = engine.rl_upstream_block()
     conf = os.path.join(TMP, f"nginx{n}.conf")
     open(conf, "w").write(f"""load_module /etc/nginx/modules/ngx_http_modsecurity_module.so;
 worker_processes 1; pid {TMP}/n{n}.pid; error_log {TMP}/err{n}.log warn;
 events {{ worker_connections 256; }}
 http {{
   access_log off;
-  map $http_upgrade $connection_upgrade {{ default upgrade; "" close; }}
+{upstream}  map $http_upgrade $connection_upgrade {{ default upgrade; "" close; }}
   limit_conn_zone $binary_remote_addr zone=perip:10m;
   limit_req_zone $binary_remote_addr zone=rl_s1:10m rate=5r/s;       # the replica's own limit stays as a safety net
   client_body_temp_path {TMP}/cb{n}; proxy_temp_path {TMP}/px{n}; fastcgi_temp_path {TMP}/fc{n}; uwsgi_temp_path {TMP}/uw{n}; scgi_temp_path {TMP}/sc{n};
