@@ -30,6 +30,7 @@ import oidc
 import openapi
 import pages
 import crowdsec
+import posture
 import ratelimit
 import security
 import sharedfs
@@ -1542,6 +1543,14 @@ def apply_now():
     return redirect(url_for("sites"))
 
 
+# --- security posture ---------------------------------------------------------------------
+@app.route("/posture")
+def posture_view():
+    if role() != "admin":
+        abort(403)
+    return render_template("posture.html", sections=posture.collect(store.load()))
+
+
 # --- metrics / api -----------------------------------------------------------------------------
 @app.route("/metrics")
 def metrics():
@@ -1564,6 +1573,19 @@ def metrics():
               "# TYPE shieldwaf_threat_feed_networks gauge", f"shieldwaf_threat_feed_networks {cfg['settings']['feeds']['last_count']}",
               "# TYPE shieldwaf_active_bans gauge", f"shieldwaf_active_bans {sum(1 for b in cfg['bans'] if b['until'] > time.time())}",
               "# TYPE shieldwaf_engine_up gauge", f"shieldwaf_engine_up {1 if engine_up() else 0}"]
+    lines += ["# TYPE shieldwaf_ratelimit_checks_total counter"] + [f'shieldwaf_ratelimit_checks_total{{result="{k}"}} {ratelimit.stats[k] if k != "error" else ratelimit.stats["errors"]}'
+                                                               for k in ("allowed", "limited", "error")]
+    lines += ["# TYPE shieldwaf_crowdsec_decisions gauge", f"shieldwaf_crowdsec_decisions {cfg['settings']['crowdsec']['last_count']}"]
+    try:
+        av = json.loads(store.meta_get("audit_verify") or "{}")
+        if av:
+            lines += ["# TYPE shieldwaf_audit_chain_ok gauge", f"shieldwaf_audit_chain_ok {1 if av.get('ok') else 0}"]
+        for r in con.execute("SELECT kind, MAX(ts) t FROM backup_log GROUP BY kind").fetchall():
+            name = "shieldwaf_" + r["kind"].replace("-", "_") + "_last_timestamp"
+            lines += [f"# TYPE {name} gauge", f"{name} {int(float(r['t']))}"]
+        con.commit()
+    except Exception:  # noqa: BLE001 - a missing table or value must not break the scrape
+        pass
     return Response("\n".join(lines) + "\n", mimetype="text/plain")
 
 

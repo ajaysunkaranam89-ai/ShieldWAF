@@ -1,5 +1,6 @@
-# Tests that need no Kubernetes cluster: unit tests (SSRF guard, OpenAPI compiler against the real engine, audit chain, backup format) and the backup
-# integration test (real PostgreSQL + an S3 server in Docker). The cluster suites (tests/run.sh) need a kind cluster and are run before a release.
+# Tests that need no Kubernetes cluster: unit tests (SSRF guard, OpenAPI compiler and bot scoring against the real engine, audit chain, backup format, feeds, posture) and
+# the Docker integration tests with real services (PostgreSQL, an S3 server, Redis, CrowdSec). The cluster suites (tests/run.sh: functional, ha, backup, hardening) need
+# a kind cluster and are run before a release.
 name: tests
 on:
   push:
@@ -13,9 +14,22 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -t shieldwaf:ci .
       - run: IMAGE=shieldwaf:ci bash tests/unit/run.sh
-  backup-integration:
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test: [backup_crypto, db_security, db_pitr, dbfailover, redis_ratelimit, crowdsec]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t shieldwaf:ci . && docker build -t shieldwaf-db:ci db
+      - run: IMAGE=shieldwaf:ci DBIMAGE=shieldwaf-db:ci bash tests/${{ matrix.test }}.sh
+  manifests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t shieldwaf:ci . && docker build -t shieldwaf-db:16 db
-      - run: IMAGE=shieldwaf:ci bash tests/backup_crypto.sh
+      - name: Helm lint and render
+        run: |
+          curl -fsSL https://get.helm.sh/helm-v3.15.4-linux-amd64.tar.gz | tar -xz && sudo mv linux-amd64/helm /usr/local/bin/helm
+          helm lint charts/shieldwaf --set backup.enabled=true --set redis.enabled=true
+          helm template t charts/shieldwaf --set backup.enabled=true --set redis.enabled=true --set networkPolicy.enabled=true > /dev/null

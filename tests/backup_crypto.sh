@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Backup crypto integration test with REAL services in throw-away Docker containers: PostgreSQL (the project's database image), Zenko CloudServer (an S3
 # implementation that verifies AWS Signature V4, as the independent destination) and the shieldwaf image running panel/backupcrypt.py. No cluster needed.
-# Needs Docker, the images shieldwaf-db:16 and ${IMAGE:-shieldwaf:2.4-dev}, and internet access to pull zenko/cloudserver.
+# Needs Docker, the images ${DBIMAGE:-shieldwaf-db:2.4-dev} and ${IMAGE:-shieldwaf:2.4-dev}, and internet access to pull zenko/cloudserver.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
 NET=shieldwaf-bk-test; IMG="${IMAGE:-shieldwaf:2.4-dev}"
@@ -24,7 +24,7 @@ bk() {   # the backup tool with database and destination settings
 psqlx() { docker exec sw-bk-pg psql -U shieldwaf -d shieldwaf -tAc "$1"; }
 
 docker network create $NET >/dev/null || exit 1
-docker run -d --name sw-bk-pg --network $NET --network-alias pg -e POSTGRES_USER=shieldwaf -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=shieldwaf shieldwaf-db:16 >/dev/null || exit 1
+docker run -d --name sw-bk-pg --network $NET --network-alias pg -e POSTGRES_USER=shieldwaf -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=shieldwaf ${DBIMAGE:-shieldwaf-db:2.4-dev} >/dev/null || exit 1
 docker run -d --name sw-bk-s3 --network $NET --network-alias s3 -e S3BACKEND=mem -e SCALITY_ACCESS_KEY_ID=minioadmin -e SCALITY_SECRET_ACCESS_KEY=minioadmin123 \
   -e REMOTE_MANAGEMENT_DISABLE=1 -e ENDPOINT=s3 zenko/cloudserver:latest >/dev/null || exit 1
 for i in $(seq 1 40); do docker exec sw-bk-pg pg_isready -U shieldwaf -d shieldwaf >/dev/null 2>&1 && break; sleep 2; done

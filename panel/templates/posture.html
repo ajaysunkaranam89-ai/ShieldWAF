@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}Security posture - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Security posture</h1>
+<p class="sub">The state of every protection of this installation in one place. Anything marked "attention" or "problem" tells you what to do about it.</p>
+{% set worst = {'err': 0, 'warn': 0, 'ok': 0} %}
+<div class="grid">
+{% for s in sections %}
+<div class="card"><b>{{ s.title }}</b>
+  <span class="pill {{ {'ok':'p-ok','warn':'p-warn','err':'p-err','info':'p-info'}[s.state] }}" style="float:right">{{ {'ok':'ok','warn':'attention','err':'problem','info':'info'}[s.state] }}</span>
+  <table style="margin-top:8px">
+  {% for i in s['items'] %}<tr><td style="width:34%"><span class="pill {{ {'ok':'p-ok','warn':'p-warn','err':'p-err','info':'p-info'}[i.state] }}">&nbsp;</span> {{ i.label }}</td><td>{{ i.text }}</td></tr>{% endfor %}
+  </table>
+</div>
+{% endfor %}
+</div>
+{% endblock %}
