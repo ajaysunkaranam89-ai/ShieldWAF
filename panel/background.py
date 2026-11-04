@@ -6,6 +6,9 @@ import json
 import os
 import threading
 import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import acme
@@ -353,6 +356,78 @@ def acme_tick():
             acme_issue(s["id"])
 
 
+_hc = {}        # (site id, upstream) -> consecutive good / bad checks (kept by the leader; a new leader starts counting again)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def _probe(url, path):
+    """True when the upstream answers (any status below 500). Redirects are not followed: a 301 is an answer."""
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(urllib.request.Request(url + path, headers={"User-Agent": "A-Shield-WAF-health"}), timeout=3) as r:  # nosec B310 - upstream already validated (http/https, no metadata addresses)
+            return r.status < 500
+    except urllib.error.HTTPError as e:
+        return e.code < 500
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def upstream_health_tick():
+    """Leader, every 10 s: probe the upstreams of sites with health checks; two bad checks in a row take one out of rotation, two good ones put it back.
+    A change is applied like any configuration change, so every replica follows."""
+    cfg = store.load()
+    jobs = []
+    for s in cfg["sites"]:
+        ups = [s["upstream"]] + [u["url"] for u in s.get("upstreams", [])]
+        if s.get("health", {}).get("enabled") and s["enabled"] and len(ups) > 1:
+            jobs += [(s["id"], u, s["health"]["path"]) for u in ups]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(lambda j: _probe(j[1], j[2]), jobs))
+    verdict = {}
+    for (sid, url, _path), ok in zip(jobs, results):
+        st = _hc.setdefault((sid, url), {"ok": 0, "bad": 0})
+        st["ok"], st["bad"] = (st["ok"] + 1, 0) if ok else (0, st["bad"] + 1)
+        verdict.setdefault(sid, {})[url] = st
+    updates = {}
+    for s in cfg["sites"]:
+        ups = [s["upstream"]] + [u["url"] for u in s.get("upstreams", [])]
+        if s["id"] not in verdict:
+            if s.get("health", {}).get("down") and not s.get("health", {}).get("enabled"):
+                updates[s["id"]] = []                          # checks were switched off: everything back into rotation
+            continue
+        down = set(s["health"]["down"])
+        for url, st in verdict[s["id"]].items():
+            if url in down and st["ok"] >= 2:
+                down.discard(url)
+            elif url not in down and st["bad"] >= 2:
+                down.add(url)
+        new = [u for u in ups if u in down]
+        if new != s["health"]["down"]:
+            updates[s["id"]] = new
+    if not updates:
+        return
+    with store._lock:
+        cfg = store.load()
+        notes = []
+        for s in cfg["sites"]:
+            if s["id"] in updates and s["health"]["down"] != updates[s["id"]]:
+                before = set(s["health"]["down"])
+                s["health"]["down"] = updates[s["id"]]
+                for u in set(updates[s["id"]]) - before:
+                    notes.append(f"{s['host']}: {u} is DOWN (out of rotation)")
+                for u in before - set(updates[s["id"]]):
+                    notes.append(f"{s['host']}: {u} is back")
+        if notes and _applier:
+            ok, msg = _applier(cfg)
+            if ok:
+                store.save(cfg)
+                store.audit("system", "upstream health", "; ".join(notes)[:400])
+                alerts.notify("upstream_down", "Upstream health changed", "; ".join(notes), severity="warning", force=True)
+
+
 def _ver(v):
     try:
         return tuple(int(x) for x in v.split("."))
@@ -434,6 +509,6 @@ def start(applier):
     alerts.start()
     # every replica: its own logs, its own engine, local clean-up. Leader only: everything that must happen once for the whole cluster.
     local = ((ingest_access, 2), (ingest_audit, 2), (prune, 3600), (health_tick, 5))
-    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600))
+    once = ((autoban_tick, 15), (feeds_tick, 600), (geo_tick, 600), (ddos_tick, 3), (spike_tick, 20), (cert_tick, 3600), (crs_tick, 900), (acme_tick, 3600), (upstream_health_tick, 10))
     for fn, every in local + tuple((cluster.leader_only(f), e) for f, e in once):
         threading.Thread(target=_loop, args=(fn, every), daemon=True, name=fn.__name__).start()

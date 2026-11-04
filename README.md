@@ -52,6 +52,7 @@ password is generated in your cluster and the admin account is created in your b
 | **TLS / HTTPS** | TLS 1.2/1.3 only, certificate upload, self-signed generation, **mounted cert-manager secrets**, **automatic free certificates (Let's Encrypt / any ACME authority) with renewal 30 days before expiry**, HSTS, HTTP to HTTPS redirect, HTTP/2 |
 | **Anti-bot challenge** | proof-of-work page for browsers; signed pass bound to client IP + browser; scope "pages" or "all"; path exclusions |
 | **Login gate** | require user name + password in front of any site (users managed in the GUI, hashes only) |
+| **Several upstreams per site** | spread a site over up to 10 backends: weights, "backup" servers, keep-a-visitor-on-one-backend mode, automatic retry of read requests on the next backend, and **active health checks** that take a failed backend out of rotation and bring it back |
 | **Maintenance mode** | one-click switch per site or all sites; the app keeps running; colourful editable page |
 | **Automatic service-down page** | friendly page when the app is unreachable; reloads itself and the app returns by itself |
 | **Positive security model** | per site: only the listed paths, content types and URL length are accepted; everything else is refused, whatever it contains (not pattern based) |
@@ -164,7 +165,7 @@ reloads nginx, waits until the new generation answers, and reports in `reload.st
 
 ## Test results (kind, two demo applications as upstreams)
 The suite is in [`tests/`](tests/README.md) and you can run it yourself (`bash tests/run.sh`, needs a test cluster, 15-25 minutes).
-An automated suite of **192 checks** (all passing on the final build, run on **two replicas** of a real cluster with a real PostgreSQL) plus **60 high-availability checks** (three replicas) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
+An automated suite of **192 checks** (all passing on the final build, run on **two replicas** of a real cluster with a real PostgreSQL) plus **91 high-availability checks** (three replicas) covers: setup and password policy, wrong-code and weak-password refusal, login lockout, TOTP login with
 recovery codes and replay refusal, session revocation after logout and after a password change, CSP/HSTS/cookie flags, metrics token,
 panel allow-list lock-out protection, SSRF refusal (loopback, metadata address and names, allowed-suffix list), import validation,
 13 attack types blocked, unknown-host drop, header-size and method limits, spoofed `X-Forwarded-For`, TLS (1.1 refused, 1.3 works,
@@ -179,6 +180,7 @@ page, rate limiting, auto-ban, backup contents and audit trail, the positive sec
 - **The database is the one single point of failure.** The replicas keep serving traffic when it is down (tested), but you cannot change the configuration until it is back, and a replica that is *newly started* during an outage cannot start. For real redundancy use a managed, replicated PostgreSQL (see `docs/CLOUD.md`).
 - Rate limits and the per-address connection cap are counted **per replica** (each replica sees only its own share of the traffic), so with N replicas an address can use up to N times the limit. Plan the numbers accordingly.
 - Reload time is now almost independent of the number of sites, except while an OWASP rule-set update is being canary-tested (two rule-set versions cannot be shared): then each site loads its own copy again and reloads are slower; test canaries on few sites.
+- Load balancing is simple: a request is sent to a randomly chosen (weighted) healthy backend. There is no connection reuse tuning, no slow-start and no session replication; health checks are done by one replica (the leader) and take about 20 seconds to react.
 - Automatic certificates use the HTTP-01 check, so they need a public host name that reaches the firewall on port 80, and no wildcard names (those need a DNS check, not built in; use cert-manager for wildcards). The ACME client is tested against Pebble, the official test server; it was not run against the real Let's Encrypt here because that needs a public domain.
 Details in `SECURITY.md`.
 
@@ -195,7 +197,7 @@ report security problems privately as described in [`SECURITY.md`](SECURITY.md).
 |---|---|
 | `Dockerfile`, `engine-entrypoint.sh`, `panel-entrypoint.sh` | the single image: engine and panel |
 | `panel/cluster.py`, `panel/sharedfs.py` | high availability: leader election, change propagation, encrypted shared files |
-| `tests/` | the 192-check regression suite, the 60-check high-availability suite and their runner |
+| `tests/` | the 192-check regression suite, the 91-check high-availability suite and their runner |
 | `panel/` | control panel (Flask app, renderer, security helpers, workers, templates, anti-bot challenge in `njs/`) |
 | `k8s/shieldwaf.yaml` | hardened namespace, replicated Deployment, disruption budget, PostgreSQL StatefulSet, services, network policies |
 | `db/Dockerfile` | the PostgreSQL image (official, pinned, OS fixes, unused `gosu` removed) |

@@ -14,7 +14,7 @@
 <tr><th>Host</th><th>Upstream</th><th>WAF mode</th><th>Protections</th><th>Maintenance</th><th>Under attack</th><th></th></tr>
 {% for s in cfg.sites %}<tr>
   <td><b>{{ s.host }}</b>{% if not s.enabled %} <span class="pill p-mut">disabled</span>{% endif %}</td>
-  <td class="mono">{{ s.upstream }}</td>
+  <td class="mono">{{ s.upstream }}{% if s.upstreams %}<br><span class="hint">+ {{ s.upstreams|length }} more{% if s.health.down %}, <b>{{ s.health.down|length }} down</b>{% endif %}</span>{% endif %}</td>
   <td>{% if s.mode == 'block' %}<span class="pill p-ok">block</span>{% elif s.mode == 'detect' %}<span class="pill p-warn">detect only</span>{% else %}<span class="pill p-mut">off</span>{% endif %}
       <span class="hint">PL{{ s.paranoia }}</span></td>
   <td class="hint">{% if s.rate_limit.enabled %}rate {{ s.rate_limit.rps }}/s &middot; {% endif %}{% if s.allow_ips %}allow-list &middot; {% endif %}{% if s.deny_ips %}{{ s.deny_ips|length }} denied &middot; {% endif %}{% if s.block_bots %}bots &middot; {% endif %}{% if s.tls.enabled %}HTTPS &middot; {% endif %}{% if s.challenge.enabled %}challenge &middot; {% endif %}{% if s.positive.enabled %}positive model &middot; {% endif %}{% if s.openapi.mode != "off" %}OpenAPI ({{ s.openapi.mode }}) &middot; {% endif %}{% if s.crs_channel == "canary" %}canary rules &middot; {% endif %}{% if s.geo.mode != "off" %}country rules &middot; {% endif %}{% if s.auth.enabled %}login &middot; {% endif %}{% if s.exclusions %}{{ s.exclusions|length }} exclusions{% endif %}</td>

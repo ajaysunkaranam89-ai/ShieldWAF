@@ -256,6 +256,23 @@ def validate_site(s, cfg):
         return err
     if any(x["host"] == s["host"] and x["id"] != s["id"] for x in cfg["sites"]):
         return "Another site already uses this host name."
+    ups = s.get("upstreams", [])
+    if len(ups) > 9:
+        return "At most 10 upstreams per site (one main address and nine more)."
+    for u in ups:
+        if not UP_RE.match(u["url"]):
+            return f"Upstream {u['url'][:60]}: must look like http://service.namespace.svc.cluster.local:80 (no path)."
+        err = security.check_upstream(u["url"], cfg["settings"]["upstream_allow"])
+        if err:
+            return f"Upstream {u['url'][:60]}: {err}"
+        if not (1 <= int(u["weight"]) <= 100):
+            return "Upstream weight must be between 1 and 100."
+    if len({u["url"] for u in ups} | {s["upstream"]}) != len(ups) + 1:
+        return "The same upstream address is listed twice."
+    if s.get("lb_method", "round_robin") not in ("round_robin", "ip_hash"):
+        return "Invalid balancing method."
+    if not re.fullmatch(r"/[A-Za-z0-9._~/\-]{0,100}", s.get("health", {}).get("path", "/")):
+        return "The health-check path must look like /health ."
     if not (1 <= int(s["paranoia"]) <= 4 and 1 <= int(s["threshold"]) <= 100 and 1 <= int(s["max_body_mb"]) <= 1024):
         return "A number is out of range (paranoia 1-4, threshold 1-100, body 1-1024 MB)."
     rl = s["rate_limit"]
@@ -330,6 +347,25 @@ def validate_site(s, cfg):
     return None
 
 
+def parse_upstreams(text):
+    """Lines like 'http://host:80 3' or 'http://host:80 backup' -> ([{"url","weight","backup"}], error)."""
+    out = []
+    for ln in (text or "").splitlines():
+        p = ln.split()
+        if not p:
+            continue
+        weight, backup = 1, False
+        for w in p[1:]:
+            if w.lower() == "backup":
+                backup = True
+            elif w.isdigit():
+                weight = int(w)
+            else:
+                return [], f"Upstream line '{ln.strip()[:60]}': after the address only a weight (1-100) and the word backup are allowed."
+        out.append({"url": p[0].rstrip("/"), "weight": weight, "backup": backup})
+    return out, None
+
+
 def parse_site(form, cfg, existing=None):
     """Build a site dict from the form and validate it. Returns (site, error_or_None)."""
     s = json.loads(json.dumps(existing or store.DEFAULT_SITE))
@@ -352,7 +388,13 @@ def parse_site(form, cfg, existing=None):
             if len(npw) < 10:
                 return s, "Login gate password must be at least 10 characters."
             auth_users[nu] = security.crypt_hash(npw)
+        more, uerr = parse_upstreams(form.get("upstreams", ""))
+        if uerr:
+            return s, uerr
+        prev_down = (existing or {}).get("health", {}).get("down", [])
         s.update({
+            "upstreams": more, "lb_method": form.get("lb_method", "round_robin"),
+            "health": {"enabled": bool(form.get("health_enabled")), "path": form.get("health_path", "/").strip() or "/", "down": prev_down},
             "host": form.get("host", "").strip().lower(), "upstream": form.get("upstream", "").strip().rstrip("/"),
             "enabled": bool(form.get("enabled")), "mode": form.get("mode", "block"), "paranoia": int(form.get("paranoia", 1)),
             "threshold": int(form.get("threshold", 5)), "maintenance": bool(form.get("maintenance")), "down_page": bool(form.get("down_page")),
@@ -1289,6 +1331,8 @@ def backup_import():
                     s[k] = {**store.DEFAULT_SITE[k], **{kk: vv for kk, vv in raw[k].items() if kk in store.DEFAULT_SITE[k]}}
             s["auth"]["users"] = {}
             s["under_attack"], s["ua_until"] = False, 0
+            hl = raw.get("health") if isinstance(raw.get("health"), dict) else {}
+            s["health"] = {"enabled": bool(hl.get("enabled")), "path": str(hl.get("path", "/"))[:100], "down": []}
             s["id"] = "s" + secrets.token_hex(3)
             s["tls"]["enabled"] = s["tls"]["enabled"] and s["tls"]["source"] == "mounted"   # uploaded keys are never exported
             cfg_probe = {"settings": cfg["settings"], "sites": new_sites}

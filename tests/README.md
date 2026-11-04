@@ -1,8 +1,8 @@
 # Regression and security test suite
 
 Two suites run against **real, throw-away copies** of A Shield WAF on a Kubernetes cluster: `functional_test.py` (**192** checks, on **two replicas**) and
-`ha_test.py` (**60** high-availability checks on **three replicas**: shared sessions and certificates, a change served by every replica, concurrent administrators,
-80 sites reloaded in seconds with correct per-site behaviour, an automatic certificate obtained from a Pebble test authority and served by every replica, killing the leader, a database outage, a rolling restart under load with zero failed requests).
+`ha_test.py` (**91** high-availability checks on **three replicas**: shared sessions and certificates, a change served by every replica, concurrent administrators,
+80 sites reloaded in seconds with correct per-site behaviour, an automatic certificate obtained from a Pebble test authority and served by every replica, several upstreams per site (spreading, weights, keep-a-visitor, failover with a dead backend, health checks out and back in), killing the leader, a database outage, a rolling restart under load with zero failed requests).
 `functional_test.py` drives the firewall through its GUI and through the firewall,
 and checks **192** behaviours: setup and login security, two-factor login, lockouts, sessions, SSRF protection, attack blocking (13 types),
 TLS, the anti-bot challenge, login gate, maintenance and service-down pages, rate limiting, auto-ban, threat feeds, country rules,

@@ -4,6 +4,7 @@ that sessions and certificates are shared, that nothing is lost when administrat
 that 80 sites reload in seconds, and that killing a replica, stopping the database or doing a rolling restart does not stop the firewall.
 Throw-away random passwords, never printed. Needs kubectl, curl is not required."""
 import base64
+import collections
 import hashlib
 import http.cookiejar
 import json
@@ -235,6 +236,11 @@ check("a session started on replica 1 is valid on replica 2 (shared sessions and
 s, html = B.req("/cluster")
 names = re.findall(r'<td class="mono">(shieldwaf-test-[a-z0-9-]+)', html)
 check("Cluster page lists all three running replicas (replicas that stopped earlier stay listed as offline for a day)", {p_[0] for p_ in ps} <= set(names), str(set(names)))
+for _ in range(20):      # a replica that stopped a moment ago (the setup restart) can still be listed as leader for up to 12 seconds
+    if len(leader_name()) == 1:
+        break
+    time.sleep(1)
+s, html = B.req("/cluster")
 check("exactly one replica is the leader", len(leader_name()) == 1 and html.count('p-ok">leader') == 1, str(leader_name()))
 for c in A.jar:
     C.jar.set_cookie(c)
@@ -440,8 +446,103 @@ except urllib.error.HTTPError:
     body = ""
 check("sites without an automatic certificate do not expose the challenge folder", body != f"answer-{tok}")
 kube("exec", tl[0].pod, "-c", "panel", "--", "python3", "-c", f"import acme; acme._unpublish('{tok}')")
-time.sleep(3)
-check("the challenge answer is removed again everywhere", all(px(t, "acme.ha.test", f"/.well-known/acme-challenge/{tok}") != 200 for t in tl))
+gone = False
+for _ in range(20):
+    gone = all(px(t, "acme.ha.test", f"/.well-known/acme-challenge/{tok}") != 200 for t in tl)
+    if gone:
+        break
+    time.sleep(1)
+check("the challenge answer is removed again everywhere", gone)
+
+# =============================================================================================== 3c. several upstreams per site
+print("== several upstreams per site", flush=True)
+PYURL = "http://demo-python.shieldwaf-demo.svc.cluster.local:80"
+
+
+def hits(t, host, n=60, path="/", method="GET"):
+    """Which demo application answered each request (X-Demo-App header), or the error status."""
+    c = collections.Counter()
+    for _ in range(n):
+        try:
+            r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{t.http}{path}", headers={"Host": host}, method=method,
+                                                              data=b"{}" if method == "POST" else None), timeout=20)
+            c[r.headers.get("X-Demo-App", "?")] += 1
+        except urllib.error.HTTPError as e:
+            c[f"http{e.code}"] += 1
+        except Exception:  # noqa: BLE001
+            c["err"] += 1
+    return c
+
+
+def site_ids(panel):
+    out = {}
+    for m in re.finditer(r"<td><b>([\w.*-]+)</b>.*?/sites/(s[0-9a-f]+)\"", panel.req("/sites")[1], re.S):
+        out.setdefault(m.group(1), m.group(2))
+    return out
+
+
+def refused(fields, text):
+    s_, h_ = A.post("/sites/new", fields, "/sites/new")
+    return "site added" not in h_ and text in re.sub(r"<[^>]+>", " ", h_)
+
+
+many = "\n".join(f"http://x{i}.shieldwaf-demo.svc.cluster.local:80" for i in range(10))
+check("more than 10 upstreams are refused", refused(site_form("v1.ha.test", upstreams=many), "At most 10"))
+check("an upstream weight above 100 is refused", refused(site_form("v2.ha.test", upstreams=PYURL + " 500"), "weight"))
+check("an unknown word after an upstream is refused", refused(site_form("v3.ha.test", upstreams=PYURL + " fast"), "only a weight"))
+check("a cloud-metadata address among the extra upstreams is refused (SSRF)", refused(site_form("v4.ha.test", upstreams="http://169.254.169.254:80 1"), "Upstream"))
+check("the same upstream listed twice is refused", refused(site_form("v5.ha.test", upstreams=NOTES + " 1"), "twice"))
+
+s, html = A.post("/sites/new", site_form("lb.ha.test", upstreams=PYURL + " 1"), "/sites/new")
+check("a site with two upstreams is added and applied on all replicas", "site added" in html and "3/3 replicas" in re.sub(r"<[^>]+>", " ", html), re.sub(r"<[^>]+>", " ", html)[250:420])
+time.sleep(1)
+for t in tl:
+    c = hits(t, "lb.ha.test", 80)
+    check(f"[{t.pod[-5:]}] requests are spread over both upstreams ({dict(c)})", c["demo-notes"] >= 16 and c["demo-python"] >= 16 and sum(c.values()) == 80, str(c))
+s, html = A.post("/sites/new", site_form("w.ha.test", upstreams=PYURL + " 9"), "/sites/new")
+c = hits(tl[0], "w.ha.test", 100)
+check(f"weights are respected: weight 9 against 1 sends most requests to the heavier upstream ({dict(c)})", c["demo-python"] >= 70, str(c))
+s, html = A.post("/sites/new", site_form("h.ha.test", upstreams=PYURL + " 1", lb_method="ip_hash"), "/sites/new")
+c = hits(tl[0], "h.ha.test", 40)
+check(f"'keep each visitor on the same upstream' sends one visitor to one upstream only ({dict(c)})", len([k for k, v in c.items() if v]) == 1, str(c))
+
+# one upstream dies: reads are retried on the next one, writes are not replayed
+sh("kubectl", "-n", DEMO_NS, "scale", "deploy/demo-python", "--replicas=0")
+sh("kubectl", "-n", DEMO_NS, "delete", "pod", "-l", "app=demo-python", "--force", "--grace-period=0")      # the demo server ignores SIGTERM: do not wait for its 30 s grace period
+time.sleep(10)
+c = hits(tl[0], "lb.ha.test", 40)
+check(f"with one upstream dead every read request still succeeds, retried on the other ({dict(c)})", c["demo-notes"] == 40, str(c))
+c2 = hits(tl[1], "lb.ha.test", 40, "/api/notes", "POST")
+check(f"a write that hit the dead upstream is NOT replayed (502 seen), writes to the living one work ({dict(c2)})", c2["http502"] > 0 and c2["demo-notes"] > 0 and sum(c2.values()) == 40, str(c2))
+
+# health checks take it out of rotation, and bring it back
+sid_lb = site_ids(A).get("lb.ha.test", "x")
+s, html = A.post(f"/sites/{sid_lb}", site_form("lb.ha.test", upstreams=PYURL + " 1", health_enabled="on", health_path="/"), f"/sites/{sid_lb}")
+check("health checks are switched on for the site", "site updated" in html, re.sub(r"<[^>]+>", " ", html)[250:400])
+out = False
+for _ in range(25):
+    time.sleep(3)
+    if "out of rotation now" in A.req(f"/sites/{sid_lb}")[1]:
+        out = True
+        break
+check("the dead upstream is taken out of rotation by the health checks (within about 75 s)", out)
+ok_all, got = True, {}
+for t in tl:
+    got[t.pod[-5:]] = hits(t, "lb.ha.test", 30)
+    ok_all = ok_all and got[t.pod[-5:]]["demo-notes"] == 30
+check("...on every replica, and every request goes straight to the living upstream", ok_all, str(got))
+sh("kubectl", "-n", DEMO_NS, "scale", "deploy/demo-python", "--replicas=1")
+sh("kubectl", "-n", DEMO_NS, "rollout", "status", "deploy/demo-python", "--timeout=120s", timeout=140)
+back = False
+for _ in range(25):
+    time.sleep(3)
+    if "out of rotation now" not in A.req(f"/sites/{sid_lb}")[1]:
+        back = True
+        break
+check("when it answers again it is put back into rotation automatically", back)
+time.sleep(2)
+c = hits(tl[2], "lb.ha.test", 80)
+check(f"and gets its share of the traffic again ({dict(c)})", c["demo-notes"] >= 16 and c["demo-python"] >= 16, str(c))
 
 # =============================================================================================== 4. a replica dies
 print("== killing the leader replica", flush=True)

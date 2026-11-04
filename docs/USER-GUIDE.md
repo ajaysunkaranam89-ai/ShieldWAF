@@ -20,6 +20,17 @@ A *site* maps a host name to an application inside the cluster. **Sites, + Add s
 | Rate limit | requests per second per address, then HTTP 429 | protects logins and APIs |
 | Allow-list / Deny-list | addresses that may / may never connect | an allow-list blocks everyone else |
 
+### Several upstreams (load balancing and failover)
+In the site form, **Basics**, add more backends under *More upstreams*, one per line: an address and an optional weight (1-100), or the word `backup` for a backend that is used only when all the others are down.
+```
+http://app-2.my-namespace.svc.cluster.local:80 3
+http://spare.my-namespace.svc.cluster.local:80 backup
+```
+- **Balancing:** *spread requests* picks a backend for every request, in proportion to the weights. *Keep each visitor on the same upstream* picks by the visitor's address, so a visitor stays on one backend (useful for apps that keep session data in memory).
+- **Failover without any setting:** if nginx cannot reach the backend it chose (refused or timed out), a read request (GET, HEAD, OPTIONS) is retried once on the next backend. **Writes (POST, PUT, ...) are never replayed**, so a request is not executed twice; they get the usual "service is down" answer instead.
+- **Health checks (recommended):** tick *Check all upstreams every 10 seconds*. The leader replica asks every backend for the health path (default `/`); two failed checks in a row (an answer of 500 or higher, or no answer) take it out of rotation, two good ones put it back. The site list and the site page show which are out; an alert is sent (event "An upstream of a site went down or came back"). If every backend is marked down they are all tried anyway (better than refusing). Checks run from the leader replica's point of view.
+- Backend addresses are looked up again for every request, so a replaced Kubernetes service is found without a reload. All the usual checks apply to every backend (no loopback or cloud-metadata addresses, the allowed-suffix list in Settings).
+
 ### Maintenance mode (planned updates)
 **Sites**, press **Turn on** in the *Maintenance* column (or **Maintenance ON (all)**). Visitors see a maintenance page (HTTP 503); your
 application keeps running so you can update it. Edit the page under **Pages**. Press **Turn off** when done. Takes effect within seconds.

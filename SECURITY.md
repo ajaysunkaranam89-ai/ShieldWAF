@@ -76,6 +76,9 @@ database cannot plant files on a replica (forged rows fail authentication; only 
 secret can read the shared files, so protect them separately (RBAC on the secret, encrypted database volume). The key cannot be rotated from the GUI yet: to rotate it, create a new key, restart all replicas, and re-upload the certificates.
 Administrator actions are serialised across replicas with a database lock (no lost updates, a 2FA or recovery code can never be used twice), and the replicas only ever talk to the database, never to each other.
 
+### Several upstreams
+Every extra backend goes through the same checks as the main one (address syntax, no loopback / link-local / cloud-metadata addresses, the allowed-suffix list), at most ten per site. The health probe is a plain GET without cookies or credentials to the address you configured, made by the leader replica, with a 3-second limit, without following redirects. Writes are never retried on another backend.
+
 ### Automatic certificates (ACME)
 The ACME client (`panel/acme.py`, RFC 8555) only talks to the authority address you chose in Settings: it must be https and, outside tests, must resolve to public addresses only (no request into the cluster);
 every address the authority returns must be on the same host; the issued certificate is checked (right name, valid now, matches the freshly generated key) before it is used; the account key is created once, kept

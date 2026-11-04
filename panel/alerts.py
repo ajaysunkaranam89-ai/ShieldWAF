@@ -31,6 +31,7 @@ EVENTS = {   # key: (label, default severity)
     "under_attack": ("Under-attack mode switched on or off", "warning"),
     "attack_spike": ("Many blocked requests in a short time", "warning"),
     "auto_ban": ("An address was banned automatically", "info"),
+    "upstream_down": ("An upstream of a site went down or came back", "warning"),
     "login_lockout": ("Admin login locked out after repeated failures", "warning"),
     "admin_change": ("Administrator, role, password or 2FA change", "warning"),
     "cert_expiring": ("A certificate expires soon", "warning"),

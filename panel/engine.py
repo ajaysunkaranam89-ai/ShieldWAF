@@ -225,6 +225,45 @@ def _modsec_dedicated(site):
 ACME_LOCATION = "location ^~ /.well-known/acme-challenge/ { alias " + os.path.join(DATA, "acme") + "/; default_type text/plain; modsecurity off; }"
 
 
+def balancing(site):
+    """Upstreams to spread requests over, in order: healthy primaries; backups only when no primary is healthy; everything if all are marked down
+    (better to try than to refuse). Returns [{"url", "weight", "backup"}]."""
+    ups = [{"url": site["upstream"], "weight": 1, "backup": False}] + [dict(u) for u in site.get("upstreams", [])]
+    down = set(site.get("health", {}).get("down", []))
+    for pool in ([u for u in ups if not u["backup"] and u["url"] not in down], [u for u in ups if u["backup"] and u["url"] not in down], ups):
+        if pool:
+            return pool
+    return ups
+
+
+def _lb_conf(site):
+    """http-level nginx directives that pick an upstream per request (variables are resolved at request time, so an upstream that does not
+    exist yet never stops nginx from starting): split_clients = weighted choice, map = 'the next upstream' used when the first one fails."""
+    pool = balancing(site)
+    if len(pool) < 2:
+        return ""
+    sid, total = site["id"], sum(int(u["weight"]) for u in pool)
+    key = "${remote_addr}" if site.get("lb_method") == "ip_hash" else "${request_id}"
+    rows, acc = [], 0.0
+    for u in pool[:-1]:
+        pct = round(100.0 * int(u["weight"]) / total, 2)
+        acc += pct
+        rows.append(f'    {pct:.2f}% "{u["url"]}";')
+    rows.append(f'    * "{pool[-1]["url"]}";')
+    nxt = [f'    "{pool[i]["url"]}" "{pool[(i + 1) % len(pool)]["url"]}";' for i in range(len(pool))]
+    return (f'  split_clients "{key}" $up_{sid} {{\n' + "\n".join(rows) + "\n  }\n"
+            f'  map $up_{sid} $upnext_{sid} {{\n    default "{pool[0]["url"]}";\n' + "\n".join(nxt) + "\n  }\n")
+
+
+PROXY_OPTS = ["    proxy_http_version 1.1;", "    proxy_ssl_server_name on;",
+              "    proxy_set_header Host $host;", "    proxy_set_header X-Real-IP $remote_addr;",
+              "    proxy_set_header X-Forwarded-For $remote_addr;",          # never trust a client-supplied chain
+              "    proxy_set_header X-Forwarded-Host $host;", "    proxy_set_header X-Forwarded-Proto $scheme;",
+              "    proxy_set_header X-Request-ID $request_id;", '    proxy_set_header Proxy "";',
+              "    proxy_set_header Upgrade $http_upgrade;", "    proxy_set_header Connection $connection_upgrade;",
+              "    proxy_connect_timeout 5s;", "    proxy_read_timeout 60s;", "    proxy_send_timeout 60s;", "    proxy_hide_header X-Powered-By;"]
+
+
 def _common(site, gen, feed_on, layout="legacy"):
     """Directives shared by the HTTP and HTTPS server of a site (access control, headers, WAF, maintenance / proxy)."""
     sid = site["id"]
@@ -280,25 +319,32 @@ def _common(site, gen, feed_on, layout="legacy"):
               f"  location = /__shield_maintenance.html {{ internal; root {pdir}; add_header Retry-After 1800 always; add_header Cache-Control no-store always; }}",
               "  location / { return 503; }"]
         return L
+    lb = len(balancing(site)) > 1
+    if lb:      # several upstreams: when nginx itself cannot get an answer (refused, timed out), a read request is retried once on the next upstream
+        L.append(f"  error_page 502 503 504 = @retry_{sid};")
+    elif site["down_page"]:
+        L.append("  error_page 502 503 504 /__shield_down.html;")
     if site["down_page"]:
-        L += ["  error_page 502 503 504 /__shield_down.html;",
-              f"  location = /__shield_down.html {{ internal; root {pdir}; add_header Retry-After 30 always; add_header Cache-Control no-store always; }}"]
+        L.append(f"  location = /__shield_down.html {{ internal; root {pdir}; add_header Retry-After 30 always; add_header Cache-Control no-store always; }}")
     loc = ["  location / {"]
     if ch["enabled"]:
         loc.append("    if ($chal_need = 1) { rewrite ^ /__shield/page last; }")
     if site["auth"]["enabled"] and site["auth"]["users"]:
         realm = re.sub(r'[^A-Za-z0-9 ._-]', "", site["auth"]["realm"])[:60] or "Restricted"
         loc += [f'    auth_basic "{realm}";', f"    auth_basic_user_file {gen}/htpasswd-{sid};"]
-    loc += [f'    set $up "{site["upstream"]}";', "    proxy_pass $up;", "    proxy_http_version 1.1;", "    proxy_ssl_server_name on;",
-            "    proxy_set_header Host $host;", "    proxy_set_header X-Real-IP $remote_addr;",
-            "    proxy_set_header X-Forwarded-For $remote_addr;",          # never trust a client-supplied chain
-            "    proxy_set_header X-Forwarded-Host $host;", "    proxy_set_header X-Forwarded-Proto $scheme;",
-            "    proxy_set_header X-Request-ID $request_id;", '    proxy_set_header Proxy "";',
-            "    proxy_set_header Upgrade $http_upgrade;", "    proxy_set_header Connection $connection_upgrade;",
-            "    proxy_connect_timeout 5s;", "    proxy_read_timeout 60s;", "    proxy_send_timeout 60s;", "    proxy_hide_header X-Powered-By;"]
+    up = f"$up_{sid}" if lb else f'"{balancing(site)[0]["url"]}"'
+    loc += [f"    set $up {up};", "    proxy_pass $up;"] + PROXY_OPTS
     if site["rate_limit"]["enabled"]:
         loc += [f"    limit_req zone=rl_{sid} burst={int(site['rate_limit']['burst'])} nodelay;", "    limit_req_status 429;"]
     loc.append("  }")
+    if lb:
+        retry = [f"  location @retry_{sid} {{", '    if ($request_method !~ "^(GET|HEAD|OPTIONS)$") { return 502; }',      # never replay a write
+                 f"    set $up $upnext_{sid};", "    proxy_pass $up;"] + PROXY_OPTS
+        # the retry location must not inherit "error_page ... = @retry" (that would loop): it shows the down page, or a plain 502 without one
+        retry.append("    error_page 502 503 504 " + ("/__shield_down.html;" if site["down_page"] else "/__shield_gw;"))
+        loc += retry + ["  }"]
+        if not site["down_page"]:
+            loc.append('  location = /__shield_gw { internal; return 502 "Bad gateway"; }')
     return L + loc
 
 
@@ -400,6 +446,7 @@ def _render(cfg):
         zones = "".join(f"  limit_req_zone $binary_remote_addr zone=rl_{s['id']}:10m rate={int(s['rate_limit']['rps'])}r/s;\n"
                         for s in sites if s["rate_limit"]["enabled"])
         servers = ""
+        lb_conf = "".join(_lb_conf(s) for s in sites)
         for s in sites:
             pd = f"{gen}/pages/{s['id']}"
             os.makedirs(pd)
@@ -450,6 +497,7 @@ http {{
   log_format shield escape=json '{{"ts":$msec,"ip":"$remote_addr","host":"$host","method":"$request_method","uri":"$request_uri","status":$status,"rt":$request_time,"ua":"$http_user_agent"}}';
   access_log {LOG_DIR}/access.log shield;
   resolver {_dns_servers()} valid=10s ipv6=off;
+  map_hash_bucket_size 256;                  # upstream addresses are used as map keys (failover to the next upstream)
   map $http_upgrade $connection_upgrade {{ default upgrade; '' close; }}
   js_import challenge from {NJS_DIR}/challenge.js;
   js_set $chal_need challenge.need;
@@ -457,7 +505,7 @@ http {{
   limit_req_zone $binary_remote_addr zone=chal_verify:10m rate=10r/s;
   geo $shield_feed {{ default 0;{(chr(10) + "    include " + gen + "/feeds.geo;") if feed_on else ""} }}
   geo $shield_cc {{ default ""; include {gen}/countries.geo; }}
-{modsec_http}{ct_maps}{real_ip}{zones}
+{modsec_http}{ct_maps}{real_ip}{zones}{lb_conf}
   server {{
     listen {HTTP_PORT} default_server;
     server_name _;

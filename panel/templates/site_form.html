@@ -9,6 +9,16 @@
     <div><label>Host name <small>clients use this</small></label><input type="text" name="host" value="{{ s.host }}" placeholder="app.example.com" required></div>
     <div><label>Upstream <small>where requests go (loopback / metadata addresses are refused)</small></label><input type="text" name="upstream" value="{{ s.upstream }}" required></div>
   </div>
+  <label>More upstreams <small>(optional, to spread the load: one per line, address and optional weight 1-100, add the word <b>backup</b> for one that is used only when the others are down)</small></label>
+  <textarea name="upstreams" rows="3" placeholder="http://app-2.my-namespace.svc.cluster.local:80 3&#10;http://spare.my-namespace.svc.cluster.local:80 backup">{% for u in s.upstreams %}{{ u.url }} {{ u.weight }}{% if u.backup %} backup{% endif %}
+{% endfor %}</textarea>
+  <div class="row">
+    <div><label>Balancing</label><select name="lb_method"><option value="round_robin" {{ 'selected' if s.lb_method != 'ip_hash' }}>spread requests (weighted, random)</option><option value="ip_hash" {{ 'selected' if s.lb_method == 'ip_hash' }}>keep each visitor on the same upstream (by address)</option></select></div>
+    <div><label>Health check path <small>(GET, an answer below 500 counts as healthy)</small></label><input type="text" name="health_path" value="{{ s.health.path }}" placeholder="/health"></div>
+  </div>
+  <label class="chk"><input type="checkbox" name="health_enabled" {{ 'checked' if s.health.enabled }}> Check all upstreams every 10 seconds and take a failed one out of rotation until it answers again (needs at least two upstreams)</label>
+  {% if s.health.down %}<p class="hint"><span class="pill p-err">out of rotation now</span> {% for u in s.health.down %}<span class="mono">{{ u }}</span> {% endfor %}</p>{% endif %}
+  <p class="hint">Even without health checks, a read request (GET, HEAD, OPTIONS) that cannot reach its upstream is retried once on the next one. Writes are never replayed. Upstream addresses are looked up again for every request, so a service that is replaced is found automatically.</p>
   <label class="chk"><input type="checkbox" name="enabled" {{ 'checked' if s.enabled }}> Site enabled</label>
   <label class="chk"><input type="checkbox" name="maintenance" {{ 'checked' if s.maintenance }}> <b>Maintenance mode</b> (every visitor gets the maintenance page, the app keeps running)</label>
   <label class="chk"><input type="checkbox" name="down_page" {{ 'checked' if s.down_page }}> Show the "service is down" page automatically when the app is unreachable (502/503/504)</label>

@@ -81,7 +81,7 @@ DEFAULT_SETTINGS = {
     # alerting + SIEM export (channels are managed in the GUI; secrets live in /data/secrets, never here)
     "alerts": {"channels": [], "cooldown_s": 300, "spike": {"enabled": True, "blocked_per_min": 100},
                "events": {"engine_down": True, "engine_recovered": True, "config_failed": True, "under_attack": True, "attack_spike": True,
-                          "auto_ban": True, "login_lockout": True, "admin_change": True, "cert_expiring": True, "feeds_failed": True,
+                          "auto_ban": True, "upstream_down": True, "login_lockout": True, "admin_change": True, "cert_expiring": True, "feeds_failed": True,
                           "rules_update": True}},
     # OWASP rule-set updates (see crsupdate.py): "baked" = the version inside the image
     "crs": {"active": "baked", "previous": "", "staged": "", "staged_sha256": "", "staged_at": 0, "latest": "", "checked_at": 0,
@@ -94,6 +94,9 @@ DEFAULT_SETTINGS = {
 
 DEFAULT_SITE = {
     "id": "", "host": "", "upstream": "", "enabled": True,
+    "upstreams": [],                # more upstreams besides `upstream`: [{"url": "...", "weight": 1, "backup": False}]
+    "lb_method": "round_robin",     # round_robin (weighted, random per request) | ip_hash (a client keeps its upstream)
+    "health": {"enabled": False, "path": "/", "down": []},     # active checks by the leader; `down` = upstreams currently out of rotation
     "mode": "block",                # block | detect | off
     "paranoia": 1,                  # OWASP CRS paranoia level 1..4
     "threshold": 5,                 # inbound anomaly score that triggers a block
