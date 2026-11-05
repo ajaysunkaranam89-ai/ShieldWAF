@@ -14,3 +14,7 @@ tests/.shieldwaf-test.yaml
 
 # Docker Compose secrets
 deploy/.env
+
+# upgrade test state (contains a throw-away test password)
+tests/.upg-state.json
+tests/.upg-v23.yaml
