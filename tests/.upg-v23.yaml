@@ -1,0 +1,382 @@
+# A Shield WAF 2.3 on Kubernetes, highly available: several identical replicas (pods), each = engine (nginx + ModSecurity + OWASP CRS) +
+# panel (HTTPS GUI), sharing only a small private scratch volume. All replicas use one PostgreSQL database: configuration, sessions, logs
+# and the (encrypted) shared files live there, so any replica can fail, restart or be replaced without losing anything.
+# Build and load the images first (see docs/INSTALL.md): docker build -t shieldwaf:2.3 . ; docker build -t shieldwaf-db:16 db ;
+# kind load docker-image shieldwaf:2.3 shieldwaf-db:16 --name mycluster
+# No secrets are stored here. Create the secret first (random database password + key for the shared files, kept only in the cluster):
+#   sh scripts/create-db-secret.sh            (or .\scripts\create-db-secret.ps1 on Windows)
+# The admin account is created in the browser on first start. Change `replicas` below (2 = redundancy, 3 = survives a node loss while
+# a rolling update runs); one replica works too.
+#
+# Hardening in this file: "restricted" Pod Security level, non-root, read-only root filesystem, all capabilities dropped,
+# seccomp RuntimeDefault, no service-account token, resource limits, NetworkPolicy (default deny + explicit allows),
+# no process-namespace sharing between the two containers.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shieldwaf-test
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shieldwaf-test
+  namespace: shieldwaf-test
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate            # new replicas start and become ready before old ones stop: no downtime on upgrades
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: shieldwaf
+  template:
+    metadata:
+      labels:
+        app: shieldwaf
+    spec:
+      automountServiceAccountToken: false      # the WAF never talks to the Kubernetes API
+      terminationGracePeriodSeconds: 45
+      topologySpreadConstraints:               # spread the replicas over different nodes when there are several (never blocks scheduling)
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: shieldwaf
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10101                       # high unprivileged id (no collision with host users)
+        runAsGroup: 10101
+        fsGroup: 10101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: engine
+          image: shieldwaf:2.3
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/engine-entrypoint.sh"]
+          lifecycle:
+            preStop:                           # keep serving for a moment after the pod is taken out of the Service (no dropped requests)
+              exec:
+                command: ["sleep", "8"]
+          ports:
+            - containerPort: 8080
+            - containerPort: 8443
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /__shieldwaf_health
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /__shieldwaf_health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp-engine
+              mountPath: /tmp
+            # - name: certs                      # optional: cert-manager secrets, one folder per certificate (see docs/CLOUD.md)
+            #   mountPath: /certs
+            #   readOnly: true
+        - name: panel
+          image: shieldwaf:2.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+          env:
+            - name: SHIELD_DB_URL           # PostgreSQL connection string (from the secret created by scripts/create-db-secret.*)
+              valueFrom:
+                secretKeyRef:
+                  name: shieldwaf-db
+                  key: SHIELD_DB_URL
+            - name: SHIELD_DATA_KEY         # encrypts the files replicas share through the database (certificates, keys, alert secrets)
+              valueFrom:
+                secretKeyRef:
+                  name: shieldwaf-db
+                  key: SHIELD_DATA_KEY
+            - name: SHIELD_NODE             # this replica's name, shown on the Cluster page
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+              scheme: HTTPS
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi        # nginx -t loads the OWASP rules once per site; raise if you add many sites
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp-panel
+              mountPath: /tmp
+            # - name: certs
+            #   mountPath: /certs
+            #   readOnly: true
+            # - name: panel-tls                  # optional: your own certificate for the admin panel (tls.crt / tls.key)
+            #   mountPath: /panel-tls
+            #   readOnly: true
+      volumes:
+        - name: data                           # private to this replica (rendered configuration, logs, local copies of shared files); rebuilt from the database
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp-engine
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp-panel
+          emptyDir:
+            sizeLimit: 256Mi
+        # - name: certs
+        #   projected:
+        #     sources:
+        #       - secret: { name: notes-tls, items: [ {key: tls.crt, path: notes-tls/tls.crt}, {key: tls.key, path: notes-tls/tls.key} ] }
+        # - name: panel-tls
+        #   secret: { secretName: shieldwaf-panel-tls }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-proxy          # the protected traffic (clients -> WAF -> apps); in the cloud put a LoadBalancer in front of 80/443 only
+  namespace: shieldwaf-test
+spec:
+  selector:
+    app: shieldwaf
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: https
+      port: 8443
+      targetPort: 8443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-panel          # the admin GUI (HTTPS) + /metrics (token). Keep it ClusterIP: never expose it to the internet.
+  namespace: shieldwaf-test
+spec:
+  selector:
+    app: shieldwaf
+  ports:
+    - name: https
+      port: 9000
+      targetPort: 9000
+---
+# At least one replica must stay up during voluntary disruptions (node drain, upgrades of the cluster).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shieldwaf-test
+  namespace: shieldwaf-test
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: shieldwaf
+---
+# Default deny, then allow only what is needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-default-deny
+  namespace: shieldwaf-test
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-allow
+  namespace: shieldwaf-test
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - ports:                       # protected traffic from anywhere (restrict `from:` to your load balancer range in production)
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8443 }
+    - from:                        # admin panel: only from pods in namespaces labelled shieldwaf-admin=true
+        - namespaceSelector:
+            matchLabels:
+              shieldwaf-admin: "true"
+      ports:
+        - { protocol: TCP, port: 9000 }
+  egress:
+    - to:                          # DNS
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:                          # the applications behind the WAF; never the cloud metadata service or other link-local targets
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["169.254.0.0/16", "100.100.100.200/32"]
+---
+# ------------------------------------------------------------------------------------------------ PostgreSQL
+# Stores the configuration (sites, users, settings), the attack log, access statistics, sessions and the audit trail.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shieldwaf-db
+  namespace: shieldwaf-test
+spec:
+  serviceName: shieldwaf-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shieldwaf-db
+  template:
+    metadata:
+      labels:
+        app: shieldwaf-db
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70                          # the postgres image needs its own user (initdb looks it up in /etc/passwd)
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: shieldwaf-db:16                 # built from db/Dockerfile (official PostgreSQL, pinned, OS fixes, unused gosu removed)
+          args: ["postgres", "-c", "max_connections=200"]    # each replica keeps about 20 connections
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: shieldwaf
+            - name: POSTGRES_DB
+              value: shieldwaf
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shieldwaf-db
+                  key: POSTGRES_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "shieldwaf", "-d", "shieldwaf"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "shieldwaf", "-d", "shieldwaf"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: pgrun
+              mountPath: /var/run/postgresql
+            - name: pgtmp
+              mountPath: /tmp
+      volumes:
+        - name: pgrun
+          emptyDir: {}
+        - name: pgtmp
+          emptyDir:
+            sizeLimit: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shieldwaf-db
+  namespace: shieldwaf-test
+spec:
+  clusterIP: None            # headless: the pod is reached as shieldwaf-db
+  selector:
+    app: shieldwaf-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+# Only the panel (and the backup / restore pods) may talk to the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shieldwaf-db-allow
+  namespace: shieldwaf-test
+spec:
+  podSelector:
+    matchLabels:
+      app: shieldwaf-db
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: shieldwaf
+        - podSelector:                 # backup and restore pods (k8s/backup.yaml, scripts/restore-db.*)
+            matchLabels:
+              app: shieldwaf-backup
+      ports:
+        - { protocol: TCP, port: 5432 }
+
