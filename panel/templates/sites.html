@@ -28,7 +28,7 @@
     <form class="inline" method="post" action="{{ url_for('site_under_attack', sid=s.id) }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="state" value="off"><button class="btn ok sm">Turn off</button></form>
     {% else %}<span class="pill p-mut">off</span>
     <form class="inline" method="post" action="{{ url_for('site_under_attack', sid=s.id) }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="hidden" name="state" value="on"><button class="btn dng sm" data-confirm="Force the anti-bot challenge and a rate limit on {{ s.host }}?">Turn on</button></form>{% endif %}</td>
-  <td><a class="btn sec sm" href="{{ url_for('site_edit', sid=s.id) }}">Edit</a>
+  <td><a class="btn sec sm" href="{{ url_for('site_edit', sid=s.id) }}">Edit</a> <a class="btn sec sm" href="{{ url_for('site_history', sid=s.id) }}">History</a>
     <form class="inline" method="post" action="{{ url_for('site_delete', sid=s.id) }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn dng sm" data-confirm="Delete {{ s.host }}?">Delete</button></form></td>
 </tr>{% else %}<tr><td colspan="7" class="hint">No sites yet. Click <b>+ Add site</b>.</td></tr>{% endfor %}
 </table></div>

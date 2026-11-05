@@ -1,0 +1,37 @@
+{% extends "base.html" %}{% block title %}Analytics - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Analytics</h1>
+<p class="sub">What is hitting your sites and what the firewall did about it. Data is kept as long as the access log (7 days by default), so longer ranges show what exists.</p>
+<form method="get" class="row" style="margin-bottom:12px">
+  <div><label>Range</label><select name="range" onchange="this.form.submit()">{% for r in ranges %}<option value="{{ r }}" {{ 'selected' if r == d.range }}>{{ {'1h':'last hour','24h':'last 24 hours','7d':'last 7 days','30d':'last 30 days'}[r] }}</option>{% endfor %}</select></div>
+  <div><label>Site</label><select name="host" onchange="this.form.submit()"><option value="">all sites</option>{% for h in hosts %}<option value="{{ h }}" {{ 'selected' if h == d.host }}>{{ h }}</option>{% endfor %}</select></div>
+  <div><label>&nbsp;</label><a class="btn sec" href="{{ url_for('analytics_csv', range=d.range, host=d.host) }}">Download CSV</a></div>
+</form>
+
+<div class="grid">
+  <div class="card"><b>Requests</b><div style="font-size:26px">{{ '{:,}'.format(d.totals.requests) }}</div><div class="hint">{{ '{:,}'.format(d.totals.unique_clients) }} unique clients, {{ d.totals.avg_ms }} ms average</div></div>
+  <div class="card"><b>Blocked (403)</b><div style="font-size:26px">{{ '{:,}'.format(d.totals.blocked) }}</div><div class="hint">{{ d.totals.block_rate }} % of requests</div></div>
+  <div class="card"><b>Rate limited (429)</b><div style="font-size:26px">{{ '{:,}'.format(d.totals.rate_limited) }}</div><div class="hint">{{ '{:,}'.format(d.totals.server_errors) }} server errors (5xx)</div></div>
+  <div class="card"><b>Rule matches</b><div style="font-size:26px">{{ '{:,}'.format(d.events.matches) }}</div><div class="hint">{{ '{:,}'.format(d.events.blocked) }} of them blocked the request</div></div>
+</div>
+
+<div class="card" style="margin-top:14px"><b>Traffic over time</b> <span class="hint">grey = requests, red = blocked, amber = rate limited ({{ (d.bucket // 60) }} min per bar, UTC)</span>
+  {% set mx = (d.series|map(attribute='requests')|max) or 1 %}
+  <svg viewBox="0 0 600 120" width="100%" height="140" role="img" aria-label="traffic over time" preserveAspectRatio="none">
+    {% set n = d.series|length %}{% set w = 600 / (n if n else 1) %}
+    {% for p in d.series %}{% set x = loop.index0 * w %}
+      <rect x="{{ x }}" y="{{ 110 - (p.requests / mx * 100) }}" width="{{ [w - 1, 1]|max }}" height="{{ p.requests / mx * 100 }}" fill="#7d8aa0" opacity=".55"/>
+      <rect x="{{ x }}" y="{{ 110 - (p.blocked / mx * 100) }}" width="{{ [w - 1, 1]|max }}" height="{{ p.blocked / mx * 100 }}" fill="#e5484d"/>
+      <rect x="{{ x }}" y="{{ 110 - ((p.blocked + p.limited) / mx * 100) }}" width="{{ [w - 1, 1]|max }}" height="{{ p.limited / mx * 100 }}" fill="#f5a524"/>
+    {% endfor %}
+  </svg>
+</div>
+
+<div class="grid" style="margin-top:14px">
+  <div class="card"><b>Top sites</b><table><tr><th>Site</th><th>Requests</th><th>Blocked</th></tr>{% for r in d.top_hosts %}<tr><td>{{ r.host }}</td><td>{{ r.n }}</td><td>{{ r.blocked or 0 }}</td></tr>{% else %}<tr><td colspan="3" class="hint">no data</td></tr>{% endfor %}</table></div>
+  <div class="card"><b>Top rules</b><table><tr><th>Rule</th><th>Matches</th><th>Blocked</th></tr>{% for r in d.top_rules %}<tr><td title="{{ r.msg }}">{{ r.rule_id }} <span class="hint">{{ (r.msg or '')[:48] }}</span></td><td>{{ r.n }}</td><td>{{ r.blocked or 0 }}</td></tr>{% else %}<tr><td colspan="3" class="hint">no data</td></tr>{% endfor %}</table></div>
+  <div class="card"><b>Top clients</b><table><tr><th>Address</th><th>Matches</th><th>Rules</th><th>Country</th></tr>{% for r in d.top_ips %}<tr><td class="mono">{{ r.ip }}</td><td>{{ r.n }}</td><td>{{ r.rules }}</td><td>{{ r.country or '-' }}</td></tr>{% else %}<tr><td colspan="4" class="hint">no data</td></tr>{% endfor %}</table></div>
+  <div class="card"><b>Most attacked URLs</b><table><tr><th>URL</th><th>Matches</th></tr>{% for r in d.top_uris %}<tr><td class="mono" style="word-break:break-all">{{ r.uri[:90] }}</td><td>{{ r.n }}</td></tr>{% else %}<tr><td colspan="2" class="hint">no data</td></tr>{% endfor %}</table></div>
+  <div class="card"><b>Countries (by rule matches)</b><table><tr><th>Country</th><th>Matches</th></tr>{% for r in d.top_countries %}<tr><td>{{ r.country }}</td><td>{{ r.n }}</td></tr>{% else %}<tr><td colspan="2" class="hint">no data</td></tr>{% endfor %}</table><p class="hint">Needs the country data (Threat intelligence, Update country data); "??" = unknown.</p></div>
+</div>
+{% endblock %}

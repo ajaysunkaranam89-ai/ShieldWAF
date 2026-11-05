@@ -1,0 +1,30 @@
+{% extends "base.html" %}{% block title %}Policy approval - A Shield WAF{% endblock %}
+{% block body %}
+<h1>Policy approval</h1>
+<p class="sub">With approval switched on, a change to a site (create, edit, delete) is not applied until <b>another administrator</b> approves it. The author can withdraw it; every step is in the audit trail, and every applied version of a site is kept (Sites, History) so it can be restored.</p>
+
+<div class="card"><b>Settings</b>
+  <form method="post" action="{{ url_for('policy_settings') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}">
+    <label class="chk"><input type="checkbox" name="approval" {{ 'checked' if pol.approval }}> Changes to sites need approval by a second administrator</label>
+    <label class="chk"><input type="checkbox" name="allow_self_approve" {{ 'checked' if pol.allow_self_approve }}> Allow an administrator to approve their own change <small>(break-glass; weakens the control, shown in the audit trail)</small></label>
+    <p class="hint">Administrators: {{ admins }}. Not covered by approval: maintenance and under-attack switches (emergency tools), users, settings. Config import is switched off while approval is on.</p>
+    <p><button class="btn">Save</button></p></form>
+</div>
+
+<div class="card" style="margin-top:14px"><b>Changes</b>
+  <table><tr><th>When</th><th>Change</th><th>Author</th><th>What differs</th><th>Status</th><th></th></tr>
+  {% for c in changes %}<tr>
+    <td>{{ c.ts|int|ts }}</td>
+    <td>{{ c.kind }} <b>{{ c.host }}</b>{% if c.risky %} <span class="pill p-warn">high impact</span>{% endif %}</td>
+    <td>{{ c.author }}</td>
+    <td>{% for d in c.diff[:8] %}<div class="mono" style="font-size:12px">{{ '&#9888; '|safe if d.risky }}{{ d.field }}: {{ d.old if d.old is not none else '-' }} &rarr; {{ d.new if d.new is not none else '-' }}</div>{% endfor %}{% if c.diff|length > 8 %}<div class="hint">... and {{ c.diff|length - 8 }} more</div>{% endif %}</td>
+    <td><span class="pill {{ {'pending':'p-warn','approved':'p-ok','rejected':'p-err','failed':'p-err','stale':'p-err'}.get(c.status,'p-info') }}">{{ c.status }}</span>{% if c.decided_by %}<div class="hint">{{ c.decided_by }}{% if c.note %}: {{ c.note }}{% endif %}</div>{% endif %}</td>
+    <td>{% if c.status == 'pending' %}
+      {% if c.author != me or pol.allow_self_approve %}<form class="inline" method="post" action="{{ url_for('policy_decide', cid=c.id, act='approve') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sm" data-confirm="Apply this change now?">Approve</button></form>
+      <form class="inline" method="post" action="{{ url_for('policy_decide', cid=c.id, act='reject') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><input type="text" name="note" placeholder="reason" style="width:110px"><button class="btn dng sm">Reject</button></form>{% endif %}
+      {% if c.author == me %}<form class="inline" method="post" action="{{ url_for('policy_decide', cid=c.id, act='cancel') }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sec sm">Withdraw</button></form>{% endif %}
+    {% endif %}</td></tr>
+  {% else %}<tr><td colspan="6" class="hint">No changes yet.</td></tr>{% endfor %}
+  </table>
+</div>
+{% endblock %}

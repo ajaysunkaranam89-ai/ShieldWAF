@@ -29,7 +29,9 @@ import netguard
 import oidc
 import openapi
 import pages
+import analytics
 import crowdsec
+import policy
 import posture
 import ratelimit
 import security
@@ -845,8 +847,17 @@ def site_new():
             if err:
                 flash(err, "err")
                 return _form(s, True, cfg)
+            if policy.enabled(cfg):
+                cid, perr = policy.submit("create", s["id"], s["host"], me(), None, s)
+                if perr:
+                    flash(perr, "err")
+                    return _form(s, True, cfg)
+                store.audit(me(), "policy change proposed", f"create {s['host']} ({cid})", client_ip())
+                flash("Submitted for approval: another administrator has to approve it on the Policy page.", "ok")
+                return redirect(url_for("policy_view"))
             cfg["sites"].append(s)
             if apply_cfg(cfg, "site added", s["host"]):
+                policy.record_version(s, "created", me())
                 if s["tls"]["enabled"] and s["tls"]["source"] == "acme":
                     background.acme_issue_async(s["id"], force=True)
                 return redirect(url_for("sites"))
@@ -869,8 +880,17 @@ def site_edit(sid):
             if err:
                 flash(err, "err")
                 return _form(s, False, cfg)
+            if policy.enabled(cfg):
+                cid, perr = policy.submit("update", sid, s["host"], me(), cur, s)
+                if perr:
+                    flash(perr, "err")
+                    return _form(s, False, cfg)
+                store.audit(me(), "policy change proposed", f"update {s['host']} ({cid})", client_ip())
+                flash("Submitted for approval: another administrator has to approve it on the Policy page. The site keeps its current policy until then.", "ok")
+                return redirect(url_for("policy_view"))
             cfg["sites"] = [s if x["id"] == sid else x for x in cfg["sites"]]
             if apply_cfg(cfg, "site updated", s["host"]):
+                policy.record_version(s, "updated", me())
                 if s["tls"]["enabled"] and s["tls"]["source"] == "acme" and (s["tls"].get("acme_state") in ("", "pending", "error") or form_wants_acme(request.form)):
                     background.acme_issue_async(s["id"], force=True)
                 return redirect(url_for("sites"))
@@ -901,6 +921,14 @@ def site_delete(sid):
     with store._lock:
         cfg = store.load()
         s = site_by_id(cfg, sid) or abort(404)
+        if policy.enabled(cfg):
+            cid, perr = policy.submit("delete", sid, s["host"], me(), s, None)
+            if perr:
+                flash(perr, "err")
+            else:
+                store.audit(me(), "policy change proposed", f"delete {s['host']} ({cid})", client_ip())
+                flash("Deletion submitted for approval on the Policy page.", "ok")
+            return redirect(url_for("policy_view"))
         cfg["sites"] = [x for x in cfg["sites"] if x["id"] != sid]
         if apply_cfg(cfg, "site deleted", s["host"]):
             import shutil
@@ -1498,6 +1526,9 @@ def backup_export():
 
 @app.route("/backup/import", methods=["POST"])
 def backup_import():
+    if policy.enabled(store.load()):
+        flash("Import is switched off while changes need approval (it would bypass the review). Propose the sites one by one, or switch approval off first.", "err")
+        return redirect(url_for("backup"))
     f = request.files.get("file")
     try:
         data = json.loads(f.read().decode("utf-8"))
@@ -1541,6 +1572,154 @@ def apply_now():
     with store._lock:
         apply_cfg(store.load(), "re-applied")
     return redirect(url_for("sites"))
+
+
+# --- policy approval and site history (policy.py) ----------------------------------------------
+def _need_admin():
+    if role() != "admin":
+        abort(403)
+
+
+@app.route("/policy")
+def policy_view():
+    _need_admin()
+    cfg = store.load()
+    return render_template("policy.html", changes=policy.listing(), pol=policy.settings(cfg), admins=len(_admins(cfg)), me=me())
+
+
+@app.route("/policy/settings", methods=["POST"])
+def policy_settings():
+    _need_admin()
+    with store._lock:
+        cfg = store.load()
+        want, selfok = bool(request.form.get("approval")), bool(request.form.get("allow_self_approve"))
+        if want and len(_admins(cfg)) < 2 and not selfok:
+            flash("Approval needs a second administrator to approve changes: create another administrator first (Users), or allow self-approval.", "err")
+            return redirect(url_for("policy_view"))
+        old = policy.settings(cfg)
+        cfg["settings"]["policy"] = {"approval": want, "allow_self_approve": selfok}
+        store.save(cfg)
+        store.audit(me(), "policy approval settings", f"approval {old['approval']} -> {want}, self-approval {old['allow_self_approve']} -> {selfok}", client_ip(), category="policy")
+        flash("Policy settings saved.", "ok")
+    return redirect(url_for("policy_view"))
+
+
+@app.route("/policy/<cid>/<act>", methods=["POST"])
+def policy_decide(cid, act):
+    _need_admin()
+    if act not in ("approve", "reject", "cancel"):
+        abort(404)
+    with store._lock:
+        cfg = store.load()
+        ch = policy.get(cid) or abort(404)
+        if act == "cancel":
+            if ch["author"] != me() or ch["status"] != "pending":
+                flash("Only the author can withdraw a pending change.", "err")
+            else:
+                policy.mark(cid, "withdrawn", me())
+                store.audit(me(), "policy change withdrawn", f"{ch['kind']} {ch['host']} ({cid})", client_ip(), category="policy")
+                flash("Change withdrawn.", "ok")
+            return redirect(url_for("policy_view"))
+        ok, why = policy.can_decide(cfg, ch, me())
+        if not ok:
+            flash(why, "err")
+            return redirect(url_for("policy_view"))
+        note = request.form.get("note", "").strip()[:300]
+        if act == "reject":
+            policy.mark(cid, "rejected", me(), note)
+            store.audit(me(), "policy change rejected", f"{ch['kind']} {ch['host']} ({cid}) by {ch['author']}: {note}", client_ip(), category="policy")
+            flash("Change rejected.", "ok")
+            return redirect(url_for("policy_view"))
+        if policy.stale(cfg, ch):
+            policy.mark(cid, "stale", me(), "the site changed after this was proposed")
+            store.audit(me(), "policy change stale", f"{ch['kind']} {ch['host']} ({cid})", client_ip(), category="policy")
+            flash("Not applied: the site changed after this change was proposed. Ask the author to propose it again.", "err")
+            return redirect(url_for("policy_view"))
+        cur = site_by_id(cfg, ch["site_id"])
+        if ch["kind"] == "delete":
+            cfg["sites"] = [x for x in cfg["sites"] if x["id"] != ch["site_id"]]
+            new = None
+        else:
+            new = policy.merge_volatile(ch["new"], cur)
+            others = dict(cfg, sites=[x for x in cfg["sites"] if x["id"] != ch["site_id"]])
+            err = validate_site(new, others)
+            if err:
+                policy.mark(cid, "failed", me(), err)
+                flash(f"Not applied: {err}", "err")
+                return redirect(url_for("policy_view"))
+            cfg["sites"] = [new if x["id"] == ch["site_id"] else x for x in cfg["sites"]] if cur else cfg["sites"] + [new]
+        if apply_cfg(cfg, "policy change approved", f"{ch['kind']} {ch['host']} ({cid}) proposed by {ch['author']}"):
+            policy.mark(cid, "approved", me(), note)
+            if new is not None:
+                policy.record_version(new, {"create": "created", "update": "updated"}.get(ch["kind"], ch["kind"]), ch["author"], me())
+                if new["tls"]["enabled"] and new["tls"]["source"] == "acme" and new["tls"].get("acme_state") in ("", "pending", "error"):
+                    background.acme_issue_async(new["id"], force=True)
+            else:
+                import shutil
+                shutil.rmtree(os.path.join(security.CERT_DIR, ch["site_id"]), ignore_errors=True)
+                sharedfs.forget(f"certs/{ch['site_id']}")
+        else:
+            policy.mark(cid, "failed", me(), "the engine refused the configuration")
+    return redirect(url_for("policy_view"))
+
+
+@app.route("/sites/<sid>/history")
+def site_history(sid):
+    _need_admin()
+    cfg = store.load()
+    vs = policy.versions(sid)
+    cur = site_by_id(cfg, sid)
+    rows = []
+    for i, v in enumerate(vs):
+        prev = vs[i + 1]["version"] if i + 1 < len(vs) else None
+        rows.append(dict(v, diff=policy.versions_diff(sid, prev, v["version"]) if prev else [], first=prev is None))
+    return render_template("history.html", sid=sid, host=cur["host"] if cur else (vs[0]["host"] if vs else sid), rows=rows, exists=bool(cur), approval=policy.enabled(cfg))
+
+
+@app.route("/sites/<sid>/restore/<int:version>", methods=["POST"])
+def site_restore(sid, version):
+    _need_admin()
+    with store._lock:
+        cfg = store.load()
+        v = policy.get_version(sid, version) or abort(404)
+        cur = site_by_id(cfg, sid)
+        new = policy.merge_volatile(v["site"], cur)
+        others = dict(cfg, sites=[x for x in cfg["sites"] if x["id"] != sid])
+        err = validate_site(new, others)
+        if err:
+            flash(f"Version {version} cannot be restored: {err}", "err")
+            return redirect(url_for("site_history", sid=sid))
+        if policy.enabled(cfg):
+            cid, perr = policy.submit("update" if cur else "create", sid, new["host"], me(), cur, new)
+            if perr:
+                flash(perr, "err")
+            else:
+                store.audit(me(), "policy change proposed", f"restore version {version} of {new['host']} ({cid})", client_ip(), category="policy")
+                flash(f"Restoring version {version} was submitted for approval.", "ok")
+            return redirect(url_for("policy_view"))
+        cfg["sites"] = [new if x["id"] == sid else x for x in cfg["sites"]] if cur else cfg["sites"] + [new]
+        if apply_cfg(cfg, "site restored", f"{new['host']} to version {version}"):
+            policy.record_version(new, f"restored v{version}", me())
+    return redirect(url_for("site_history", sid=sid))
+
+
+# --- analytics ---------------------------------------------------------------------------------
+@app.route("/analytics")
+def analytics_view():
+    host = request.args.get("host", "")[:253]
+    rng = request.args.get("range", "24h")
+    data = analytics.summary(rng if rng in analytics.RANGES else "24h", host)
+    return render_template("analytics.html", d=data, hosts=analytics.hosts(), ranges=list(analytics.RANGES))
+
+
+@app.route("/analytics.csv")
+def analytics_csv():
+    _need_admin()
+    host = request.args.get("host", "")[:253]
+    rng = request.args.get("range", "24h")
+    data = analytics.summary(rng if rng in analytics.RANGES else "24h", host)
+    store.audit(me(), "analytics exported", f"range {rng} host {host or 'all'}", client_ip())
+    return Response(analytics.csv_lines(data), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=shieldwaf-analytics.csv"})
 
 
 # --- security posture ---------------------------------------------------------------------

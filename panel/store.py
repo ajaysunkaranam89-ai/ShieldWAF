@@ -90,6 +90,8 @@ DEFAULT_SETTINGS = {
                   {"name": "blocklist.de (reported attackers, last 48 h)", "url": "https://lists.blocklist.de/lists/all.txt", "on": False},
                   {"name": "Emerging Threats compromised hosts", "url": "https://rules.emergingthreats.net/blockrules/compromised-ips.txt", "on": False},
               ]},
+    # change management: with approval on, site changes wait for a second administrator (policy.py)
+    "policy": {"approval": False, "allow_self_approve": False},
     # CrowdSec bouncer: pulls the ban decisions of a CrowdSec Local API (crowdsec.py); the key lives in the panel-only secrets folder, never here
     "crowdsec": {"enabled": False, "url": "", "last_count": 0, "last_error": ""},
     # alerting + SIEM export (channels are managed in the GUI; secrets live in /data/secrets, never here)
@@ -434,6 +436,13 @@ def _migrations():
             "CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts)",
             f"CREATE TABLE IF NOT EXISTS backup_log(id {'BIGSERIAL PRIMARY KEY' if PG else 'INTEGER PRIMARY KEY'}, ts DOUBLE PRECISION, kind TEXT, detail TEXT, ingested INTEGER DEFAULT 0)",
         ]),
+        (3, "policy approval and site version history", [
+            "CREATE TABLE IF NOT EXISTS policy_changes(id TEXT PRIMARY KEY, ts DOUBLE PRECISION, kind TEXT, site_id TEXT, host TEXT, author TEXT, status TEXT, payload TEXT, "
+            "diff TEXT, base TEXT, decided_by TEXT, decided_ts DOUBLE PRECISION, note TEXT)",
+            "CREATE INDEX IF NOT EXISTS pc_status ON policy_changes(status, ts)",
+            "CREATE TABLE IF NOT EXISTS policy_versions(site_id TEXT, version INTEGER, ts DOUBLE PRECISION, action TEXT, author TEXT, approver TEXT, host TEXT, data TEXT, "
+            "PRIMARY KEY(site_id, version))",
+        ]),
     ]
 
 
@@ -549,7 +558,7 @@ def _audit_key():
     return hashlib.sha256(b"shieldwaf-audit-chain-v1:" + (d or "development-only-key").encode()).digest()
 
 
-CATEGORIES = (("login", "auth"), ("logout", "auth"), ("2fa", "auth"), ("sso", "auth"), ("password", "auth"), ("lockout", "auth"), ("setup", "auth"),
+CATEGORIES = (("policy", "policy"), ("login", "auth"), ("logout", "auth"), ("2fa", "auth"), ("sso", "auth"), ("password", "auth"), ("lockout", "auth"), ("setup", "auth"),
               ("user", "user"), ("role", "user"), ("certificate", "certificate"), ("cert", "certificate"), ("acme", "certificate"),
               ("backup", "backup"), ("restore", "backup"), ("site", "policy"), ("settings", "policy"), ("config", "policy"), ("rule", "policy"),
               ("maintenance", "policy"), ("under-attack", "policy"), ("ban", "security"), ("auto-ban", "security"), ("ssrf", "security"),
