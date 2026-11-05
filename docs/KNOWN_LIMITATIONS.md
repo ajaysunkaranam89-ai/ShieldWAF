@@ -21,7 +21,7 @@ Status of the 2.4 plan, stated plainly. "Done" means implemented **and** covered
 
 ## Not implemented (by decision or time)
 
-* **L Wazuh decoders and rules, M Prometheus/Grafana dashboards (beyond a few new metrics), N multi-tenancy, O policy approval workflow, P analytics:** skipped on request. The existing 2.3 Prometheus endpoint, built-in dashboards and SIEM forwarding are unchanged; new metrics: rate-limit checks, CrowdSec decisions, audit chain state, backup / verify timestamps.
+* **L Wazuh decoders and rules, M Prometheus/Grafana dashboards (beyond a few new metrics), N multi-tenancy:** skipped on request. **O policy approval and P analytics were built afterwards** (functional suite 223/223): approval gates site changes only, needs two administrators (or audited self-approval), a pending site proposal may already have written its certificate files, and analytics only covers the access-log retention period (7 days by default). The existing 2.3 Prometheus endpoint, built-in dashboards and SIEM forwarding are unchanged; new metrics: rate-limit checks, CrowdSec decisions, audit chain state, backup / verify timestamps.
 * **K, remaining:** signed images and admission policy, user namespaces, an init container for migrations, HPA tuning, topology-aware routing.
 * **The dashboard "18 sections" rework:** replaced by the Security posture page (11 sections); the dashboards of 2.3 are unchanged.
 * **Penetration test:** not performed (`PENETRATION_TESTING.md` is a plan). **Performance comparison:** the k6 harness exists (`tests/perf`); see the status report for whether it was run and its numbers.

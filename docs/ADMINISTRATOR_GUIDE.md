@@ -20,6 +20,14 @@ The 2.3 guide (`USER-GUIDE.md`) still describes sites, rules, bans, alerts, user
 * **Bot protection** — mode `detect` first (the score appears in the access log and in the header `X-Shield-Bot-Score` to your application), look at what would be caught, then `block` or `challenge` (proof-of-work page; needs the anti-bot challenge on). Put machine clients' paths (`/api/`) in "never judged". Default threshold 6: an automation library alone (4 points) is not enough.
 * **OpenAPI validation**, **country rules**, **login gate**, **maintenance page**, **custom rules**: as in 2.3; the OpenAPI settings now include body size and depth limits.
 
+## Policy approval and history
+
+Policy approval page: switch it on and a change to a site (create, edit, delete) is **not applied** until a different administrator approves it; the author can withdraw it. Each pending change lists exactly which fields differ and flags high-impact ones (mode, TLS, rate limit, rules, upstreams). A change made against an older version of the site is refused as stale; pending changes expire after 14 days. **Sites, History** keeps every applied version (who proposed, who approved) and any version can be restored through the same approval. It needs two administrators (or the audited break-glass option "allow self-approval"). Config import is off while approval is on; maintenance / under-attack switches, users and settings are not gated. Turning approval off is itself audited: protect administrator accounts with 2FA.
+
+## Analytics
+
+Analytics page: totals, blocked and rate-limited requests, traffic over time, top sites, rules, clients, attacked URLs and countries, for 1 hour to 30 days and per site, with a CSV download. The data is the access log, kept 7 days by default.
+
 ## Threat intelligence
 
 Threat intel page: reputation feeds (a feed that is down keeps its last good copy for 7 days) and **CrowdSec**: enter the Local API address (for example `http://crowdsec:8080`) and the bouncer key from `cscli bouncers add shieldwaf`. The panel pulls bans every 30 seconds; the key is stored encrypted and never shown again. Private ranges, very wide ranges and your protected networks are never listed.
