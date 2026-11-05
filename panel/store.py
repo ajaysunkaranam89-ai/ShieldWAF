@@ -558,7 +558,7 @@ def _audit_key():
     return hashlib.sha256(b"shieldwaf-audit-chain-v1:" + (d or "development-only-key").encode()).digest()
 
 
-CATEGORIES = (("login", "auth"), ("logout", "auth"), ("2fa", "auth"), ("sso", "auth"), ("password", "auth"), ("lockout", "auth"), ("setup", "auth"),
+CATEGORIES = (("policy", "policy"), ("login", "auth"), ("logout", "auth"), ("2fa", "auth"), ("sso", "auth"), ("password", "auth"), ("lockout", "auth"), ("setup", "auth"),
               ("user", "user"), ("role", "user"), ("certificate", "certificate"), ("cert", "certificate"), ("acme", "certificate"),
               ("backup", "backup"), ("restore", "backup"), ("site", "policy"), ("settings", "policy"), ("config", "policy"), ("rule", "policy"),
               ("maintenance", "policy"), ("under-attack", "policy"), ("ban", "security"), ("auto-ban", "security"), ("ssrf", "security"),
