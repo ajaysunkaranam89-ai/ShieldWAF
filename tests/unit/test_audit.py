@@ -27,13 +27,13 @@ class Migrations(unittest.TestCase):
     def test_all_migrations_are_recorded_once(self):
         rows = store.db().execute("SELECT version, name FROM schema_migrations ORDER BY version").fetchall()
         store.db().commit()
-        self.assertEqual([r["version"] for r in rows], [1, 2])
+        self.assertEqual([r["version"] for r in rows], [1, 2, 3])
         store.migrate()
         store.migrate()                                    # running again changes nothing
         again = store.db().execute("SELECT COUNT(*) c FROM schema_migrations").fetchone()["c"]
         store.db().commit()
-        self.assertEqual(again, 2)
-        self.assertEqual(store.current_schema_version(), 2)
+        self.assertEqual(again, 3)
+        self.assertEqual(store.current_schema_version(), 3)
 
     def test_the_audit_table_has_the_chain_columns(self):
         cols = {r[1] for r in store.db().raw.execute("PRAGMA table_info(audit)").fetchall()}

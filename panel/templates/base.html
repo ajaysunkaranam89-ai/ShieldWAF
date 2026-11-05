@@ -8,7 +8,7 @@
 <div class="layout">
 <nav class="side">
   <div class="brand"><img class="logo" src="{{ url_for('static', filename='logo.svg') }}" alt="" width="40" height="40"><span>A Shield WAF<small>open-source web firewall v{{ VERSION }}</small></span></div>
-  {% set nav = [('dashboard','Dashboard'),('dashboards','Dashboards'),('cluster_view','Cluster'),('posture_view','Security posture'),('sites','Sites'),('pages_view','Pages'),('logs','Attack log'),('bans','IP bans'),('intel','Threat intel'),('settings','Settings'),('security_view','Security (2FA)')] + ([('alerts_view','Alerts'),('rules_view','Rule updates'),('users','Users'),('audit_view','Audit trail'),('backup','Backup')] if is_admin else []) %}
+  {% set nav = [('dashboard','Dashboard'),('dashboards','Dashboards'),('cluster_view','Cluster'),('posture_view','Security posture'),('analytics_view','Analytics'),('sites','Sites'),('pages_view','Pages'),('logs','Attack log'),('bans','IP bans'),('intel','Threat intel'),('settings','Settings'),('security_view','Security (2FA)')] + ([('alerts_view','Alerts'),('policy_view','Policy approval'),('rules_view','Rule updates'),('users','Users'),('audit_view','Audit trail'),('backup','Backup')] if is_admin else []) %}
   {% for ep, label in nav %}<a class="nav {{ 'on' if request.endpoint == ep or (ep=='sites' and request.endpoint in ('site_new','site_edit')) }}" href="{{ url_for(ep) }}">{{ label }}</a>{% endfor %}
   <div class="foot">Signed in as <b>{{ session.get('user') }}</b>
     <form method="post" action="{{ url_for('logout') }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sec sm" style="margin-top:8px">Log out</button></form>

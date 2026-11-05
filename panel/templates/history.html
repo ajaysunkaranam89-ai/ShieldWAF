@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block title %}History - A Shield WAF{% endblock %}
+{% block body %}
+<h1>History of {{ host }}</h1>
+<p class="sub">Every applied version of this site's policy: who proposed it, who approved it, and what changed. {% if approval %}Restoring an older version is submitted for approval like any other change.{% else %}Restoring applies at once (approval is off).{% endif %}</p>
+<div class="card">
+  <table><tr><th>Version</th><th>When</th><th>Action</th><th>By</th><th>Approved by</th><th>Changes</th><th></th></tr>
+  {% for r in rows %}<tr>
+    <td>v{{ r.version }}</td><td>{{ r.ts|int|ts }}</td><td>{{ r.action }}</td><td>{{ r.author }}</td><td>{{ r.approver or '-' }}</td>
+    <td>{% if r.first %}<span class="hint">first version</span>{% endif %}{% for d in r.diff[:6] %}<div class="mono" style="font-size:12px">{{ '&#9888; '|safe if d.risky }}{{ d.field }}: {{ d.old if d.old is not none else '-' }} &rarr; {{ d.new if d.new is not none else '-' }}</div>{% endfor %}{% if r.diff|length > 6 %}<div class="hint">... and {{ r.diff|length - 6 }} more</div>{% endif %}</td>
+    <td>{% if not loop.first or not exists %}<form class="inline" method="post" action="{{ url_for('site_restore', sid=sid, version=r.version) }}"><input type="hidden" name="_csrf" value="{{ csrf() }}"><button class="btn sec sm" data-confirm="Restore version {{ r.version }}?">Restore</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="hint">No versions recorded yet (versions are kept from the moment a site is saved in 2.4).</td></tr>{% endfor %}
+  </table>
+</div>
+<p><a class="btn sec" href="{{ url_for('sites') }}">Back to sites</a></p>
+{% endblock %}
